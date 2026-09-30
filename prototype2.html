@@ -28,10 +28,16 @@ canvas{display:block;width:100%;height:100%;image-rendering:pixelated;touch-acti
 <canvas id="gameCanvas" width="980" height="650"></canvas>
 </div>
 <div class="instructions">
-⌨️ <b>Ketik sebanyak mungkin dalam waktu sesi!</b> • <span class="kbd">1</span>/<span class="kbd">2</span> Pilih skill • <span class="kbd">ENTER</span> Mulai/Selesai • <span class="kbd">R</span> Skip kata • <span class="kbd">Tab</span> Bertahan • <span class="kbd">U</span> RUSH • <span class="kbd">M</span> BGM • <span class="kbd">C</span> CRT
+⌨️ <b>Mobile:</b> Tap huruf berurutan • <b>Desktop:</b> Ketik A-Z • <span class="kbd">F1</span> Mode • <span class="kbd">1</span>/<span class="kbd">2</span> Skill • <span class="kbd">ENTER</span> Mulai/Selesai • <span class="kbd">Tab</span> Bertahan • <span class="kbd">F4</span> RUSH • <span class="kbd">F2</span> BGM • <span class="kbd">F3</span> CRT
 </div>
 
 <script>
+/* =========================================================
+   MOBILE DETECTION
+   ========================================================= */
+const IS_TOUCH  = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+const IS_MOBILE = IS_TOUCH && Math.min(window.innerWidth, window.innerHeight) < 900;
+
 /* =========================================================
    BALANCE & AUDIO
    ========================================================= */
@@ -39,9 +45,17 @@ const BALANCE={burnDamage:14,chainZapDamage:12,starMultiplierBonus:1.5,guardMult
 function getEnemyAttackPower(wave,isCaster=false){if(isCaster) return 12+wave*4;return Math.round(BALANCE.enemyBaseDamage+wave*BALANCE.enemyWaveDamage);}
 
 const AudioSys={ctx:null,bgmInterval:null,bgmPlaying:false,step:0,lastBeatTime:0,
-init(){if(!this.ctx){const AC=window.AudioContext||window.webkitAudioContext;this.ctx=new AC();}if(this.ctx&&this.ctx.state==='suspended') this.ctx.resume();},
-toggleBgm(){this.init();this.bgmPlaying?this.stopBgm():this.startBgm();},
-startBgm(){if(this.bgmPlaying) return;this.bgmPlaying=true;this.lastBeatTime=performance.now();const bass=[110,110,130.81,146.83,110,164.81,146.83,123.47];const leads=[220,0,261.63,293.66,329.63,392.00,293.66,246.94];this.bgmInterval=setInterval(()=>{if(!this.ctx||!this.bgmPlaying) return;const t=this.ctx.currentTime;this.lastBeatTime=performance.now();const bf=bass[this.step%bass.length];const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='triangle';o.frequency.setValueAtTime(bf,t);g.gain.setValueAtTime(0.07,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.17);o.connect(g);g.connect(this.ctx.destination);o.start(t);o.stop(t+0.17);const lf=leads[this.step%leads.length];if(lf>0&&Math.random()<0.88){const lo=this.ctx.createOscillator(),lg=this.ctx.createGain();lo.type='square';lo.frequency.setValueAtTime(lf,t);lg.gain.setValueAtTime(0.025,t);lg.gain.exponentialRampToValueAtTime(0.001,t+0.20);lo.connect(lg);lg.connect(this.ctx.destination);lo.start(t);lo.stop(t+0.20);}this.step++;},175);},
+init(){
+  if(!this.ctx){
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC){console.warn('Web Audio API tidak tersedia; audio dinonaktifkan.');return false;}
+    try{this.ctx=new AC();}catch(err){console.warn('Gagal membuat AudioContext:',err);return false;}
+  }
+  if(this.ctx&&this.ctx.state==='suspended') this.ctx.resume().catch(()=>{});
+  return !!this.ctx;
+},
+toggleBgm(){if(!this.init())return;this.bgmPlaying?this.stopBgm():this.startBgm();},
+startBgm(){if(this.bgmPlaying) return;if(!this.init()) return;this.bgmPlaying=true;this.lastBeatTime=performance.now();const bass=[110,110,130.81,146.83,110,164.81,146.83,123.47];const leads=[220,0,261.63,293.66,329.63,392.00,293.66,246.94];this.bgmInterval=setInterval(()=>{if(!this.ctx||!this.bgmPlaying) return;const t=this.ctx.currentTime;this.lastBeatTime=performance.now();const bf=bass[this.step%bass.length];const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='triangle';o.frequency.setValueAtTime(bf,t);g.gain.setValueAtTime(0.07,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.17);o.connect(g);g.connect(this.ctx.destination);o.start(t);o.stop(t+0.17);const lf=leads[this.step%leads.length];if(lf>0&&Math.random()<0.88){const lo=this.ctx.createOscillator(),lg=this.ctx.createGain();lo.type='square';lo.frequency.setValueAtTime(lf,t);lg.gain.setValueAtTime(0.025,t);lg.gain.exponentialRampToValueAtTime(0.001,t+0.20);lo.connect(lg);lg.connect(this.ctx.destination);lo.start(t);lo.stop(t+0.20);}this.step++;},175);},
 stopBgm(){this.bgmPlaying=false;if(this.bgmInterval){clearInterval(this.bgmInterval);this.bgmInterval=null;}},
 playSelect(p=440){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='triangle';o.frequency.setValueAtTime(p,this.ctx.currentTime);g.gain.setValueAtTime(.12,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.01,this.ctx.currentTime+.08);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.08);},
 playKeyOk(p){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sine';o.frequency.setValueAtTime(p,this.ctx.currentTime);o.frequency.exponentialRampToValueAtTime(p*1.15,this.ctx.currentTime+.05);g.gain.setValueAtTime(.08,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.005,this.ctx.currentTime+.07);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.07);},
@@ -88,7 +102,6 @@ function makeSilhouette(src, color){const c=document.createElement("canvas");c.w
    ║   Sampai sebelum: const RAW_WORDS=[...]                 ║
    ╚═══════════════════════════════════════════════════════╝
    ═══════════════════════════════════════════════════════════ */
-/* Contoh minimal (GANTI dengan yang lengkap dari file lamamu): */
 const SpriteLibrary = {
   sprites:{}, flashes:{},
   init(){
@@ -105,7 +118,7 @@ const SpriteLibrary = {
     for(const k in HERO_BUILDERS)register(k,HERO_BUILDERS[k],heroStates);
     for(const k in ENEMY_BUILDERS)register(k,ENEMY_BUILDERS[k],enemyStates);
   },
-  /* ⬇⬇⬇ SALIN SEMUA buildWarrior/buildRanger/buildMage/buildCleric ⬇⬇⬇ */
+/* ⬇⬇⬇ SALIN SEMUA buildWarrior/buildRanger/buildMage/buildCleric ⬇⬇⬇ */
   /* ⬇⬇⬇ buildSlime/buildOrc/buildDrakonit/buildGolem/buildWyrm ⬇⬇⬇ */
   /* dari file lamamu di sini */
   /* =========================================================
@@ -461,8 +474,7 @@ const SpriteLibrary = {
     };
 
     let bob=0;
-    if(state==="idle") bob=[0,1,2,3,2,1][frame%4]||[0,1,2,1][frame]||0;
-    if(state==="idle") bob=[0,1,2,1][frame];
+    if(state==="idle") bob=[0,1,2,3,2,1][frame%6];
     else if(isWalk) bob=[0,1,2,1,2,1][frame];
     else if(isAct1||isAct2) bob=[0,-2,-3,-1,0][frame];
     else if(isHurt) bob=2;
@@ -1482,8 +1494,10 @@ const STATE={
   currentWord:"",typedChars:0,wordStartTime:0,
   wordModifier:null,wordThemeMatch:false,wordSource:"EASY",
   wrongKeysInWord:0,stunUntil:0,skipped:false,wordQueue:[],
+  inputMode: IS_MOBILE ? "TAP" : "TYPE",
+  letterBubbles:[],
   // ── TURN (per-hero sesi) ──
-  turnTimeLimit:10000,     // durasi sesi (ms). Ubah 5000 untuk 5 detik
+  turnTimeLimit:10000,
   turnTimeStart:0,
   turnElapsed:0,
   turnWordsTyped:0,
@@ -1493,6 +1507,7 @@ const STATE={
   turnWordStreak:0,
   turnMaxStreak:0,
   turnWordsHistory:[],
+  turnModifiers:new Set(),
   // ── STATS global ──
   combo:0,maxCombo:0,wordsPerfect:0,
   stats:{wordsCount:0,bestWord:"-",bestWordDmg:0,totalDamageDealt:0,bestSpeed:0}
@@ -1509,10 +1524,20 @@ function getDifficultyForWave(w){
 function pickWord(hero, difficulty){
   const useCompass = STATE.relics.some(r=>r.id==="compass");
   const themed = THEMED_WORDS[hero.spriteKey]?.[difficulty] || [];
+  const allThemed = [
+    ...(THEMED_WORDS[hero.spriteKey]?.EASY || []),
+    ...(THEMED_WORDS[hero.spriteKey]?.MEDIUM || []),
+    ...(THEMED_WORDS[hero.spriteKey]?.HARD || [])
+  ];
   const general = difficulty==="EASY"?EASY_WORDS : difficulty==="MEDIUM"?MEDIUM_WORDS : HARD_WORDS;
-  let pool, preferTheme = useCompass || Math.random() < 0.55;
-  if(preferTheme && themed.length>0) pool = themed;
-  else pool = general;
+  let pool;
+  if(useCompass){
+    pool = themed.length ? themed : (allThemed.length ? allThemed : general);
+  } else if(Math.random() < 0.55 && themed.length){
+    pool = themed;
+  } else {
+    pool = general;
+  }
   return pool[Math.floor(Math.random()*pool.length)];
 }
 function isThemeMatch(word, hero){ return THEMES[hero.spriteKey] && THEMES[hero.spriteKey].has(word); }
@@ -1621,6 +1646,83 @@ function resolveProjectile(p){
 }
 
 /* =========================================================
+   TAP MODE: huruf acak + distractor
+   ========================================================= */
+function generateLetterBubbles(word){
+  const letters = word.split("");
+  const distractorCount = 2 + Math.floor(Math.random()*2);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const usedSet = new Set(letters);
+  const distractors = [];
+  let safety = 0;
+  while(distractors.length < distractorCount && safety++ < 100){
+    const c = alphabet[Math.floor(Math.random()*alphabet.length)];
+    if(!usedSet.has(c)){ distractors.push(c); usedSet.add(c); }
+  }
+  const all = letters.concat(distractors);
+  for(let i=all.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [all[i],all[j]] = [all[j],all[i]];
+  }
+  const n = all.length;
+  const cols = Math.min(5, Math.ceil(n/2));
+  const rows = Math.ceil(n/cols);
+  const panelX0 = 45, panelX1 = 435;
+  const panelY0 = 470, panelY1 = 622;
+  const cellW = (panelX1-panelX0)/cols;
+  const cellH = (panelY1-panelY0)/rows;
+  const radius = Math.min(cellW, cellH) * 0.40;
+  const now = performance.now();
+  const bubbles = all.map((ch,i)=>{
+    const r = Math.floor(i/cols);
+    const c = i%cols;
+    const jx = (Math.random()-0.5) * Math.max(0, cellW - radius*2.5);
+    const jy = (Math.random()-0.5) * Math.max(0, cellH - radius*2.5);
+    return {
+      char: ch,
+      x: panelX0 + cellW*(c+0.5) + jx,
+      y: panelY0 + cellH*(r+0.5) + jy,
+      r: radius,
+      used: false,
+      wrongFlash: 0,
+      spawnTime: now + i*35
+    };
+  });
+  return bubbles;
+}
+function handleBubbleTap(x, y){
+  if(STATE.turnPhase!=="HERO_TYPING") return false;
+  if(STATE.inputMode!=="TAP") return false;
+  if(!STATE.currentWord) return false;
+  if(performance.now() < STATE.stunUntil) return false;
+  for(const b of STATE.letterBubbles){
+    if(b.used) continue;
+    const dx = x - b.x, dy = y - b.y;
+    if(dx*dx + dy*dy <= b.r*b.r){
+      const expected = STATE.currentWord[STATE.typedChars];
+      if(b.char === expected){
+        b.used = true;
+        STATE.typedChars++;
+        AudioSys.playKeyOk(500 + STATE.typedChars*40);
+        spawnParticles(b.x, b.y, STATE.wordModifier?STATE.wordModifier.color:"#38bdf8", 6);
+        if(STATE.typedChars >= STATE.currentWord.length) completeWord();
+      } else {
+        b.wrongFlash = performance.now();
+        STATE.wrongKeysInWord++;
+        STATE.turnWordStreak = 0;
+        STATE.combo = 0;
+        STATE.stunUntil = performance.now() + BALANCE.wrongKeyStunMs;
+        AudioSys.playKeyBad();
+        STATE.screenShake = 4;
+        spawnDamageNumber(b.x, b.y - b.r - 8, "✗", "#f87171", true);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+/* =========================================================
    TYPING + TURN FLOW
    ========================================================= */
 function startWalkInTransition(){
@@ -1670,6 +1772,7 @@ function startWordQueue(){
   STATE.wordThemeMatch = isThemeMatch(STATE.currentWord, hero);
   STATE.wordSource = diff;
   STATE.skipped = false;
+  STATE.letterBubbles = STATE.inputMode === "TAP" ? generateLetterBubbles(STATE.currentWord) : [];
   STATE.turnElapsed = 0;
   STATE.turnWordsTyped = 0;
   STATE.turnDamageTotal = 0;
@@ -1678,6 +1781,10 @@ function startWordQueue(){
   STATE.turnWordStreak = 0;
   STATE.turnMaxStreak = 0;
   STATE.turnWordsHistory = [];
+  STATE.turnModifiers = new Set();
+
+
+
 }
 function beginHeroTypingTurn(){
   if(STATE.turnPhase!=="HERO_READY") return;
@@ -1705,7 +1812,97 @@ function finishHeroTypingTurn(){
     STATE.stats.bestWord = STATE.turnBestWord;
     STATE.stats.bestWordDmg = STATE.turnBestDamage;
   }
+  // === EKSEKUSI SERANGAN AKUMULATIF ===
+  executeAccumulatedAttack();
   AudioSys.playSpecial();
+}
+
+function executeAccumulatedAttack(){
+  const hero = heroes[STATE.activeHeroIndex];
+  const skill = HERO_SKILLS[STATE.activeHeroIndex][STATE.selectedSkillIndex];
+  const totalPower = STATE.turnDamageTotal;
+
+  if(totalPower <= 0){
+    spawnDamageNumber(canvas.width/2, 220, "TIDAK ADA DAMAGE", "#94a3b8", true);
+    return;
+  }
+
+  // Animasi hero
+  hero.isActing = true;
+  hero.actVariant = skill.animVariant || 0;
+  hero.actStart = performance.now();
+  setTimeout(()=>{ if(hero) hero.isActing=false; }, 900);
+
+  STATE.screenShake = Math.min(22, 6 + STATE.turnWordsTyped*1.5);
+  STATE.hitFreezeTimer = 65;
+  const isCrit = (STATE.turnWordsTyped >= 4 && STATE.turnMaxStreak >= 3);
+  const target = getSelectedTarget();
+  const handler = skill.handler;
+
+  // ── AoE Heal ──
+  if(handler === "AOE_HEAL"){
+    const healAmt = Math.round(totalPower * 0.55);
+    AudioSys.playHeal();
+    heroes.forEach(h=>{ if(h.hp>0) applyHealing(hero, h, healAmt); });
+    spawnDamageNumber(canvas.width/2, 210, `💚 +${healAmt} HP × PARTY`, "#4ade80", true);
+  }
+  // ── AoE Attack ──
+  else if(handler === "AOE_ATTACK"){
+    AudioSys.playMagic();
+    spawnDamageNumber(canvas.width/2, 210, `🌋 ${totalPower} AoE!`, "#c084fc", true);
+    enemies.forEach(en=>{
+      if(en.hp>0) applyDamage(hero, en, totalPower, {isCrit, label:`-${totalPower}`, particleColor:"#f97316", particleCount:24});
+    });
+  }
+  // ── Single Target ──
+  else {
+    if(!target){
+      spawnDamageNumber(canvas.width/2, 220, "TIDAK ADA TARGET", "#94a3b8", true);
+      return;
+    }
+    if(handler === "SMITE_HEAL"){
+      AudioSys.playSlash();
+      applyDamage(hero, target, totalPower, {isCrit, label:`-${totalPower}`, particleColor:"#facc15", particleCount:26});
+      const alive = heroes.filter(h=>h.hp>0).sort((a,b)=>(a.hp/a.maxHp)-(b.hp/b.maxHp));
+      if(alive.length>0){
+        const healAmt = Math.round(totalPower * 0.4);
+        applyHealing(hero, alive[0], healAmt);
+        AudioSys.playHeal();
+      }
+    } else {
+      AudioSys.playSlash();
+      applyDamage(hero, target, totalPower, {isCrit, label:`-${totalPower}`, particleColor:"#fbbf24", particleCount:26});
+    }
+  }
+
+  // ── Efek modifier yang terkumpul selama sesi ──
+  // Elemental modifiers only affect offensive skills. Utility modifiers
+  // such as MANA/SHIELD remain valid for healing/support skills.
+  const offensiveSkill = handler === "SINGLE_ATTACK" || handler === "AOE_ATTACK" || handler === "SMITE_HEAL";
+  if(STATE.turnModifiers && STATE.turnModifiers.size > 0 && offensiveSkill && target){
+    if(STATE.turnModifiers.has("FIRE") && target.hp>0){
+      target.burnTurns = 2;
+      spawnDamageNumber(target.x, target.y-90, "🔥 TERBAKAR!", "#f97316");
+    }
+    if(STATE.turnModifiers.has("FROST") && target.hp>0){
+      target.frozen = true;
+      target.intent = {type:"FROZEN",desc:"❄️ Membeku"};
+      AudioSys.playFreeze();
+      spawnDamageNumber(target.x, target.y-90, "❄️ BEKU!", "#93c5fd");
+    }
+    if(STATE.turnModifiers.has("LIGHTNING")){
+      AudioSys.playZap();
+      enemies.forEach(en=>{
+        if(en!==target && en.hp>0) applyDamage(hero,en,BALANCE.chainZapDamage,{label:`-${BALANCE.chainZapDamage} ⚡`,color:"#67e8f9",particleColor:"#38bdf8"});
+      });
+    }
+    if(STATE.turnModifiers.has("MANA")) changeMp(hero, BALANCE.manaTileMp);
+    if(STATE.turnModifiers.has("SHIELD")) STATE.partyGuardTurns = 1;
+  }
+
+  // Banner besar
+  spawnDamageNumber(canvas.width/2, 250, `⚡ TOTAL ${totalPower} ⚡`, isCrit?"#fbbf24":"#facc15", true);
+  if(isCrit) spawnDamageNumber(canvas.width/2, 290, "★ CRITICAL STRIKE! ★", "#fbbf24", true);
 }
 function advanceToNextWord(){
   const hero = heroes[STATE.activeHeroIndex];
@@ -1719,6 +1916,7 @@ function advanceToNextWord(){
   STATE.wordModifier = rollModifier();
   STATE.wordThemeMatch = isThemeMatch(STATE.currentWord, hero);
   STATE.skipped = false;
+  STATE.letterBubbles = STATE.inputMode === "TAP" ? generateLetterBubbles(STATE.currentWord) : [];
 }
 function handleTypingKey(char){
   if(STATE.turnPhase!=="HERO_TYPING") return;
@@ -1774,6 +1972,7 @@ function completeWord(){
     else if(STATE.wordModifier.id==="FIRE") modMult *= 1.3;
     else if(STATE.wordModifier.id==="FROST") modMult *= 1.2;
     else if(STATE.wordModifier.id==="LIGHTNING") modMult *= 1.2;
+    STATE.turnModifiers.add(STATE.wordModifier.id);
   }
   let crisisMult = 1.0;
   if(STATE.relics.some(r=>r.id==="martyr")){
@@ -1785,6 +1984,8 @@ function completeWord(){
   if("AIUEO".includes(STATE.currentWord[0]) && STATE.relics.some(r=>r.id==="magma")){
     totalPower += BALANCE.magmaFireBonus;
   }
+
+  // ── AKUMULASI (tidak menyerang sekarang) ──
   STATE.stats.wordsCount++;
   STATE.turnWordsTyped++;
   STATE.turnDamageTotal += totalPower;
@@ -1793,40 +1994,27 @@ function completeWord(){
     STATE.turnBestWord = STATE.currentWord;
   }
   STATE.turnWordsHistory.push({word:STATE.currentWord, dmg:totalPower, speed:speedMult});
+
+  // Animasi hero singkat (tanpa damage)
   hero.isActing = true;
   hero.actVariant = skill.animVariant || 0;
   hero.actStart = performance.now();
-  const target = getSelectedTarget();
-  const isCrit = speedMult>=2.2 && isPerfect;
-  if(target){
-    applyDamage(hero, target, totalPower, {isCrit, label:`-${totalPower}`, particleColor:"#fbbf24", particleCount:14});
-    if(STATE.wordModifier){
-      if(STATE.wordModifier.id==="FIRE" && target.hp>0) target.burnTurns = 2;
-      if(STATE.wordModifier.id==="FROST" && target.hp>0){
-        target.frozen = true;
-        target.intent = {type:"FROZEN",desc:"❄️ Membeku"};
-        AudioSys.playFreeze();
-      }
-      if(STATE.wordModifier.id==="LIGHTNING"){
-        AudioSys.playZap();
-        enemies.forEach(en=>{
-          if(en!==target && en.hp>0) applyDamage(hero,en,BALANCE.chainZapDamage,{label:`-${BALANCE.chainZapDamage} ⚡`,color:"#67e8f9",particleColor:"#38bdf8"});
-        });
-      }
-      if(STATE.wordModifier.id==="MANA") changeMp(hero, BALANCE.manaTileMp);
-      if(STATE.wordModifier.id==="SHIELD") STATE.partyGuardTurns = 1;
-    }
-    if(STATE.relics.some(r=>r.id==="quill") && STATE.currentWord.length>=5){
-      heroes.forEach(h=>{ if(h.hp>0) applyHealing(hero,h,BALANCE.quillHeal,{yOffset:140}); });
-      AudioSys.playHeal();
-    }
+  setTimeout(()=>{ if(hero) hero.isActing=false; }, 450);
+
+  // Relic quill — heal per kata sempurna
+  if(isPerfect && STATE.relics.some(r=>r.id==="quill") && STATE.currentWord.length>=5){
+    heroes.forEach(h=>{ if(h.hp>0) applyHealing(hero,h,BALANCE.quillHeal,{yOffset:140}); });
+    AudioSys.playHeal();
   }
+
+  // Feedback
   AudioSys.playSubmitSuccess(speedMult);
   const feedback = speedMult>=3.0 ? "PERFECT!" : speedMult>=2.2 ? "CEPAT!" : speedMult>=1.6 ? "BAGUS" : "OK";
-  spawnDamageNumber(hero.x+70, hero.y-55, feedback, "#facc15", true);
-  if(STATE.turnWordStreak>1) spawnDamageNumber(hero.x-70, hero.y-55, `x${STATE.turnWordStreak}`, "#fbbf24");
+  spawnDamageNumber(hero.x, hero.y-110, `+${totalPower}`, "#fbbf24", true);
+  spawnDamageNumber(hero.x+65, hero.y-70, feedback, "#facc15", true);
+  if(STATE.turnWordStreak>1) spawnDamageNumber(hero.x-65, hero.y-70, `x${STATE.turnWordStreak}`, "#fbbf24");
+
   advanceToNextWord();
-  if(enemies.every(e=>e.hp<=0)) finishHeroTypingTurn();
 }
 function skipCurrentWord(){
   if(STATE.turnPhase!=="HERO_TYPING") return;
@@ -1890,15 +2078,48 @@ function finishPartyRush(actionId){
   heroes.forEach(h=>{if(h)h.isActing=false;});
   setTimeout(()=>{if(!isActionValid(actionId)||isCombatFinished())return;advanceTurn();},400);
 }
+function toggleInputMode(){
+  STATE.inputMode = STATE.inputMode === "TAP" ? "TYPE" : "TAP";
+  if(STATE.inputMode === "TAP" && STATE.currentWord){
+    STATE.letterBubbles = generateLetterBubbles(STATE.currentWord);
+  } else {
+    STATE.letterBubbles = [];
+  }
+  AudioSys.playSelect(600);
+  spawnDamageNumber(canvas.width/2, 250, `MODE: ${STATE.inputMode}`, "#38bdf8", true);
+}
 function resetGame(){
+  // Invalidate every delayed callback from the previous run.
+  STATE.turnId++;
   STATE.turnPhase="TITLE";
-  STATE.wave=1; STATE.rushGauge=0;
-  STATE.relics=[]; STATE.offeredRelics=[];
+  STATE.wave=1;
+  STATE.activeHeroIndex=0;
+  STATE.selectedSkillIndex=0;
+  STATE.selectedEnemyIndex=0;
+  STATE.rushGauge=0;
+  STATE.relics=[];
+  STATE.offeredRelics=[];
+  STATE.partyGuardTurns=0;
+  STATE.projectileLedger={actionId:null,pending:0};
   STATE.stats={wordsCount:0,bestWord:"-",bestWordDmg:0,totalDamageDealt:0,bestSpeed:0};
   STATE.projectiles=[]; STATE.particles=[]; STATE.damageNumbers=[];
   STATE.combo=0; STATE.maxCombo=0; STATE.wordsPerfect=0;
-  STATE.currentWord=""; STATE.typedChars=0;
-  heroes.forEach(h=>{h.hp=h.maxHp;h.mp=h.maxMp;h.x=h.baseX;h.isActing=false;h.stunned=false;h.frozen=false;h.burnTurns=0;h.poisonTurns=0;});
+  STATE.currentWord=""; STATE.typedChars=0; STATE.wordStartTime=0;
+  STATE.wordModifier=null; STATE.wordThemeMatch=false; STATE.wordSource="EASY";
+  STATE.wrongKeysInWord=0; STATE.stunUntil=0; STATE.skipped=false;
+  STATE.wordQueue=[]; STATE.letterBubbles=[];
+  STATE.turnTimeStart=0; STATE.turnElapsed=0;
+  STATE.turnWordsTyped=0; STATE.turnDamageTotal=0;
+  STATE.turnBestWord=""; STATE.turnBestDamage=0;
+  STATE.turnWordStreak=0; STATE.turnMaxStreak=0;
+  STATE.turnWordsHistory=[]; STATE.turnModifiers=new Set();
+  STATE.hitFreezeTimer=0; STATE.screenShake=0; STATE.overSince=0;
+  heroes.forEach(h=>{
+    h.hp=h.maxHp; h.mp=h.maxMp; h.x=h.baseX; h.y=h.baseY;
+    h.isActing=false; h.stunned=false; h.frozen=false;
+    h.burnTurns=0; h.poisonTurns=0; h.intent=null;
+    h.hurtTimer=0; h.deathTime=0; h.actStart=0; h.actVariant=0;
+  });
   enemies=makeWave(1);
 }
 
@@ -2026,13 +2247,6 @@ function finishEnemyPhase(actionId){
 /* =========================================================
    SKILL & ENEMY ACTION HANDLERS
    ========================================================= */
-const SKILL_HANDLERS={
-  SINGLE_ATTACK:(c)=>{},
-  AOE_ATTACK:(c)=>{},
-  SMITE_HEAL:(c)=>{},
-  AOE_HEAL:(c)=>{}
-};
-
 const ENEMY_ACTION_HANDLERS={
   ATTACK:({enemy,damageVal,targetsAtHit})=>{
     const target=targetsAtHit[Math.floor(Math.random()*targetsAtHit.length)];
@@ -2052,9 +2266,15 @@ const ENEMY_ACTION_HANDLERS={
       applyDamage(enemy,h,damageVal,{label:`-${damageVal} (MAGIC)`,color:"#c084fc",particleColor:"#a855f7"});
     }
   },
-  POISON_SPIT:({enemy})=>{
+  POISON_SPIT:({enemy,damageVal,targetsAtHit,actionId})=>{
     AudioSys.playMagic();
-    spawnDamageNumber(enemy.x,enemy.y-40,"SEMBURAN RACUN!","#a855f7");
+    const target=targetsAtHit[Math.floor(Math.random()*targetsAtHit.length)];
+    if(!target||!isActionValid(actionId)||target.hp<=0)return;
+    const dealt=applyDamage(enemy,target,damageVal,{label:`-${damageVal} (RACUN)`,color:"#a855f7",particleColor:"#22c55e",particleCount:22,yOffset:65});
+    if(dealt>0&&target.hp>0){
+      target.poisonTurns=Math.max(target.poisonTurns,2);
+      spawnDamageNumber(target.x,target.y-85,"☠️ TERACUN!","#4ade80",true);
+    }
   },
   DOOM:()=>{
     AudioSys.playExplode();
@@ -2310,7 +2530,7 @@ function updateAndDrawProjectiles(){
 }
 
 /* =========================================================
-   TYPING UI — 3 FASE
+   TYPING UI — 3 FASE + TAP mode
    ========================================================= */
 function drawTypingPanel(){
   const hero = heroes[STATE.activeHeroIndex];
@@ -2324,30 +2544,28 @@ function drawTypingPanel(){
   if(STATE.turnPhase==="HERO_READY"){
     ctx.fillStyle="#f59e0b";ctx.font="bold 16px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
     ctx.fillText("🎯 PILIH SKILL, LALU MULAI", 240, 390);
-    // Info sesi
     ctx.fillStyle="#94a3b8";ctx.font="11px monospace";
     ctx.fillText(`Sesi: ${STATE.turnTimeLimit/1000} detik — ketik sebanyak mungkin!`, 240, 415);
-    // Preview kata pertama
     ctx.fillStyle="#64748b";ctx.font="10px monospace";
-    ctx.fillText("Kata pertama:", 240, 445);
+    ctx.fillText(`Mode input: ${STATE.inputMode}`, 240, 435);
+    ctx.fillStyle="#64748b";ctx.font="10px monospace";
+    ctx.fillText("Kata pertama:", 240, 458);
     ctx.fillStyle="#facc15";ctx.font="bold 28px monospace";
-    ctx.fillText(STATE.currentWord || "...", 240, 480);
-    // Hint shortcuts
+    ctx.fillText(STATE.currentWord || "...", 240, 490);
     ctx.fillStyle="#475569";ctx.font="10px monospace";
-    ctx.fillText("[1]/[2] Skill  •  [Tab] Bertahan +9 MP  •  [U] Party Rush", 240, 522);
-    // Tombol MULAI besar
+    ctx.fillText("[1]/[2] Skill  •  [Tab] Bertahan +9 MP  •  [F4] Party Rush  •  [F1] Mode", 240, 522);
     const pulse = Math.sin(performance.now()*0.005)*2;
     ctx.fillStyle="#15803d";ctx.strokeStyle="#4ade80";ctx.lineWidth=3;
     ctx.beginPath();ctx.roundRect(36, 620+pulse, 408, 26, 6);ctx.fill();ctx.stroke();
     ctx.fillStyle="#ffffff";ctx.font="bold 15px monospace";ctx.textAlign="center";
-    ctx.fillText("▶ MULAI SESI KETIK  [ENTER]", 240, 634+pulse);
+    ctx.fillText(STATE.inputMode==="TAP" ? "▶ MULAI SESI TAP  [ENTER]" : "▶ MULAI SESI KETIK  [ENTER]", 240, 634+pulse);
   }
 
   // ══ FASE 2: HERO_TYPING ══
   else if(STATE.turnPhase==="HERO_TYPING"){
     const remain = Math.max(0, 1 - STATE.turnElapsed/STATE.turnTimeLimit);
     const remainSec = Math.max(0, (STATE.turnTimeLimit - STATE.turnElapsed)/1000).toFixed(1);
-    const barW = 400, barH = 24, barX = 40, barY = 380;
+    const barW = 400, barH = 20, barX = 40, barY = 372;
     ctx.fillStyle="rgba(0,0,0,0.7)";
     ctx.beginPath();ctx.roundRect(barX-1,barY-1,barW+2,barH+2,6);ctx.fill();
     let col = "#22c55e";
@@ -2355,13 +2573,15 @@ function drawTypingPanel(){
     else if(remain<0.6) col="#facc15";
     ctx.fillStyle=col;
     ctx.beginPath();ctx.roundRect(barX,barY,barW*remain,barH,5);ctx.fill();
-    ctx.fillStyle="#ffffff";ctx.font="bold 22px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#ffffff";ctx.font="bold 20px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
     ctx.fillText(`⏱ ${remainSec}s`, barX+barW/2, barY+barH/2);
-    // Kata besar
+
+    // Word display
     if(STATE.currentWord){
       const word = STATE.currentWord;
-      const cx = 240, cy = 460;
-      ctx.font="bold 42px 'Courier New', monospace";
+      const cx = 240, cy = 425;
+      const wordFontSize = STATE.inputMode==="TAP" ? 30 : 40;
+      ctx.font=`bold ${wordFontSize}px 'Courier New', monospace`;
       ctx.textAlign="left";ctx.textBaseline="middle";
       const charWidths = word.split("").map(ch=>ctx.measureText(ch).width);
       const totalW = charWidths.reduce((a,b)=>a+b,0);
@@ -2370,15 +2590,17 @@ function drawTypingPanel(){
         const typed = i<STATE.typedChars;
         const isCurrent = i===STATE.typedChars;
         if(typed){ ctx.fillStyle="#22c55e"; ctx.shadowColor="#22c55e"; ctx.shadowBlur=8; }
-        else if(isCurrent){
+        else if(isCurrent && STATE.inputMode==="TYPE"){
           const blink = Math.sin(performance.now()*0.01)>0;
           ctx.fillStyle = blink?"#facc15":"#fbbf24";
           ctx.shadowColor="#facc15"; ctx.shadowBlur=14;
+        } else if(isCurrent){
+          ctx.fillStyle="#facc15"; ctx.shadowColor="#facc15"; ctx.shadowBlur=14;
         } else { ctx.fillStyle="#f1f5f9"; ctx.shadowBlur=0; }
         ctx.fillText(word[i], x, cy);
-        if(isCurrent){
+        if(isCurrent && STATE.inputMode==="TYPE"){
           ctx.shadowBlur=0; ctx.fillStyle="#facc15";
-          ctx.fillRect(x-2, cy+18, charWidths[i]+2, 3);
+          ctx.fillRect(x-2, cy+wordFontSize*0.4, charWidths[i]+2, 3);
         }
         x += charWidths[i];
       }
@@ -2386,37 +2608,81 @@ function drawTypingPanel(){
       if(STATE.wordModifier){
         ctx.fillStyle=STATE.wordModifier.color;
         ctx.font="bold 18px monospace";ctx.textAlign="right";
-        ctx.fillText(STATE.wordModifier.icon + " " + STATE.wordModifier.id, 440, 460);
+        ctx.fillText(STATE.wordModifier.icon + " " + STATE.wordModifier.id, 440, 425);
       } else if(STATE.wordThemeMatch){
         ctx.fillStyle="#facc15";ctx.font="bold 13px monospace";ctx.textAlign="right";
-        ctx.fillText("★ TEMA", 440, 460);
+        ctx.fillText("★ TEMA", 440, 425);
       }
     }
-    // Statistik live
-    ctx.textAlign="left";ctx.textBaseline="middle";
-    ctx.fillStyle="#facc15";ctx.font="bold 13px monospace";
-    ctx.fillText(`✓ Kata: ${STATE.turnWordsTyped}`, 40, 505);
-    ctx.fillStyle="#f97316";
-    ctx.fillText(`💥 Total: ${STATE.turnDamageTotal}`, 200, 505);
+
+    // Bubbles TAP mode
+    if(STATE.inputMode==="TAP"){
+      const now = performance.now();
+      for(const b of STATE.letterBubbles){
+        const age = now - b.spawnTime;
+        if(age < 0) continue;
+        const t = Math.min(1, age/180);
+        const ease = 1 - Math.pow(1-t, 3);
+        const scale = b.used ? Math.max(0.5, 1 - (now - b.spawnTime - 100)/300) : ease;
+        if(scale <= 0.05) continue;
+        const isWrong = (now - b.wrongFlash) < 220;
+        const alpha = b.used ? Math.max(0, 1 - (now - b.spawnTime - 100)/500) : 1;
+        if(alpha <= 0) continue;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(b.x, b.y);
+        const shake = isWrong ? Math.sin((now-b.wrongFlash)*0.05)*4 : 0;
+        ctx.translate(shake, 0);
+        ctx.scale(scale, scale);
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.beginPath(); ctx.arc(0, 4, b.r, 0, Math.PI*2); ctx.fill();
+        let fill1, fill2, stroke;
+        if(b.used){
+          fill1="#14532d"; fill2="#166534"; stroke="#4ade80";
+        } else if(isWrong){
+          fill1="#7f1d1d"; fill2="#991b1b"; stroke="#f87171";
+        } else {
+          fill1="#1e3a8a"; fill2="#1e40af"; stroke="#60a5fa";
+        }
+        const grd = ctx.createRadialGradient(-b.r*0.3, -b.r*0.3, b.r*0.2, 0, 0, b.r);
+        grd.addColorStop(0, fill2); grd.addColorStop(1, fill1);
+        ctx.fillStyle = grd;
+        ctx.beginPath(); ctx.arc(0, 0, b.r, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.20)";
+        ctx.beginPath(); ctx.arc(-b.r*0.3, -b.r*0.3, b.r*0.4, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = stroke; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(0, 0, b.r, 0, Math.PI*2); ctx.stroke();
+        ctx.fillStyle = "#ffffff"; ctx.font = `bold ${Math.floor(b.r*1.1)}px monospace`;
+        ctx.textAlign="center"; ctx.textBaseline="middle";
+        ctx.fillText(b.char, 0, 1);
+        ctx.restore();
+      }
+    }
+
+     // Live stats + charge indicator
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#fbbf24";ctx.font="bold 22px monospace";
+    ctx.fillText(`⚡ CHARGE: ${STATE.turnDamageTotal}`, 240, 460);
+    ctx.textAlign="left";ctx.font="bold 12px monospace";
+    ctx.fillStyle="#facc15";
+    ctx.fillText(`✓ Kata: ${STATE.turnWordsTyped}`, 40, 488);
     ctx.fillStyle="#fbbf24";
-    ctx.fillText(`🔥 Streak: ${STATE.turnWordStreak}`, 360, 505);
-    // Berikutnya
-    ctx.fillStyle="#64748b";ctx.font="bold 11px monospace";
-    ctx.fillText("Berikutnya:", 40, 540);
-    ctx.font="bold 13px monospace";
-    let x = 130;
-    STATE.wordQueue.slice(0,4).forEach((w,i)=>{
-      ctx.fillStyle=i===0?"#94a3b8":"#475569";
-      ctx.fillText(w, x, 540);
-      x += ctx.measureText(w).width + 18;
-    });
+    ctx.fillText(`🔥 Streak: ${STATE.turnWordStreak}`, 200, 488);
+    ctx.fillStyle="#f97316";
+    ctx.fillText(`💥 Best: ${STATE.turnBestDamage}`, 360, 488);
+
+    // Tombol skip: sengaja berupa UI, bukan shortcut keyboard, agar tidak bentrok dengan typing.
+    ctx.fillStyle="#7c2d12";ctx.strokeStyle="#fb923c";ctx.lineWidth=2;
+    ctx.beginPath();ctx.roundRect(BTN_SKIP_WORD.x,BTN_SKIP_WORD.y,BTN_SKIP_WORD.w,BTN_SKIP_WORD.h,7);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#fff7ed";ctx.font="bold 13px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("⏭ SKIP KATA", BTN_SKIP_WORD.x+BTN_SKIP_WORD.w/2, BTN_SKIP_WORD.y+BTN_SKIP_WORD.h/2);
+
     // Hint
     ctx.fillStyle="#475569";ctx.font="10px monospace";
-    ctx.fillText("[A-Z] Ketik  •  [R] Skip kata  •  [Enter] Hentikan sesi", 40, 580);
-    // Skip marker
-    if(STATE.skipped){
-      ctx.fillStyle="#fb923c";ctx.font="bold 12px monospace";ctx.textAlign="center";
-      ctx.fillText("KATA DI-SKIP", 240, 610);
+    if(STATE.inputMode==="TAP"){
+      ctx.fillText("[Tap huruf] • [Tombol SKIP] • [Enter] Hentikan sesi • [F1] Ganti mode", 40, 610);
+    } else {
+      ctx.fillText("[A-Z] Ketik • [Tombol SKIP] • [Enter] Hentikan sesi • [F1] Ganti mode", 40, 610);
     }
   }
 
@@ -2441,7 +2707,7 @@ function drawTypingPanel(){
     ctx.fillText("▶ LANJUT  [ENTER]", 490, 585+pulse);
   }
 
-  // Panel kanan (skill & stats) — tetap
+  // Panel kanan
   ctx.fillStyle="#0c101d";ctx.strokeStyle="#1e293b";ctx.lineWidth=2;
   ctx.beginPath();ctx.roundRect(475,360,490,275,8);ctx.fill();ctx.stroke();
   ctx.textAlign="left";ctx.fillStyle="#f59e0b";ctx.font="bold 15px monospace";ctx.textBaseline="middle";
@@ -2491,7 +2757,7 @@ function drawTitleScreen(){
   [[40,30],[canvas.width-48,30],[40,canvas.height-38],[canvas.width-48,canvas.height-38]].forEach(([cx,cy])=>{ctx.fillRect(cx,cy,8,8);});
   ctx.textAlign="center";ctx.textBaseline="middle";
   ctx.fillStyle="#38bdf8";ctx.font="bold 13px monospace";
-  ctx.fillText("⌨️ TYPING RPG ADVENTURE ⌨️", canvas.width/2, 95);
+  ctx.fillText(IS_MOBILE?"📱 TAP ADVENTURE 📱":"⌨️ TYPING RPG ADVENTURE ⌨️", canvas.width/2, 95);
   const pulse=Math.sin(t*3)*3;
   ctx.fillStyle="#f8fafc";ctx.shadowColor="#6366f1";ctx.shadowBlur=18+pulse;
   ctx.font="bold 44px 'Courier New', monospace";
@@ -2500,7 +2766,7 @@ function drawTitleScreen(){
   ctx.fillStyle="#facc15";ctx.font="bold 22px 'Courier New', monospace";
   ctx.fillText("TYPING DUNGEON PARTY",canvas.width/2,190);
   ctx.fillStyle="#94a3b8";ctx.font="bold 12px monospace";
-  ctx.fillText("TURN-BASED TYPING EDITION",canvas.width/2,218);
+  ctx.fillText(IS_MOBILE?"MOBILE TAP EDITION":"TURN-BASED TYPING EDITION",canvas.width/2,218);
   const slots=[
     {key:"warrior",label:"Ksatria",desc:"Fisik & Stun",x:canvas.width/2-180},
     {key:"ranger",label:"Pemanah",desc:"Racun & Panah",x:canvas.width/2-60},
@@ -2523,18 +2789,26 @@ function drawTitleScreen(){
   ctx.fillStyle="#ffffff";ctx.font="bold 18px monospace";
   ctx.fillText("MULAI PETUALANGAN [↵]", canvas.width/2, BTN_TITLE_START.y+bhp+28);
   ctx.fillStyle="#64748b";ctx.font="11px monospace";
-  ctx.fillText("Setiap hero punya sesi mengetik 10 detik. Ketik sebanyak mungkin!", canvas.width/2, 530);
-  ctx.fillText("Semakin cepat + akurat, semakin besar damage ke musuh.", canvas.width/2, 550);
+  ctx.fillText("Setiap hero punya sesi 10 detik. Ketik/tap sebanyak mungkin!", canvas.width/2, 530);
+  ctx.fillText(IS_MOBILE ? "Tap huruf berurutan sesuai kata target." : "Ketik dengan keyboard, atau tekan [F1] untuk mode TAP.", canvas.width/2, 550);
+  // BGM
   ctx.fillStyle=AudioSys.bgmPlaying?"#1e3a8a":"#1e293b";
   ctx.strokeStyle=AudioSys.bgmPlaying?"#60a5fa":"#475569";ctx.lineWidth=1.5;
   ctx.beginPath();ctx.roundRect(BTN_BGM.x,BTN_BGM.y,BTN_BGM.w,BTN_BGM.h,6);ctx.fill();ctx.stroke();
   ctx.fillStyle="#f8fafc";ctx.font="bold 11px monospace";
   ctx.fillText(AudioSys.bgmPlaying?"🎵 BGM: ON":"🔇 BGM: OFF", BTN_BGM.x+BTN_BGM.w/2, BTN_BGM.y+BTN_BGM.h/2);
+  // CRT
   ctx.fillStyle=STATE.crtEnabled?"#14532d":"#1e293b";
   ctx.strokeStyle=STATE.crtEnabled?"#4ade80":"#475569";
   ctx.beginPath();ctx.roundRect(BTN_CRT.x,BTN_CRT.y,BTN_CRT.w,BTN_CRT.h,6);ctx.fill();ctx.stroke();
   ctx.fillStyle="#f8fafc";
   ctx.fillText(STATE.crtEnabled?"📺 CRT: ON":"📺 CRT: OFF", BTN_CRT.x+BTN_CRT.w/2, BTN_CRT.y+BTN_CRT.h/2);
+  // MODE
+  ctx.fillStyle=STATE.inputMode==="TAP"?"#7c2d12":"#1e293b";
+  ctx.strokeStyle=STATE.inputMode==="TAP"?"#fb923c":"#475569";
+  ctx.beginPath();ctx.roundRect(BTN_MODE.x,BTN_MODE.y,BTN_MODE.w,BTN_MODE.h,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle="#f8fafc";
+  ctx.fillText(STATE.inputMode==="TAP"?"👆 TAP: ON":"⌨️ TAP: OFF", BTN_MODE.x+BTN_MODE.w/2, BTN_MODE.y+BTN_MODE.h/2);
 }
 function drawCampfireScene(){
   ctx.fillStyle="#05070d";ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -2625,6 +2899,8 @@ function drawCrtEffect(){if(!STATE.crtEnabled||!crtCanvas) return;ctx.drawImage(
 const BTN_TITLE_START={x:340,y:440,w:300,h:56};
 const BTN_BGM={x:865,y:12,w:98,h:26};
 const BTN_CRT={x:760,y:12,w:98,h:26};
+const BTN_MODE={x:655,y:12,w:98,h:26};
+const BTN_SKIP_WORD={x:760,y:575,w:180,h:38};
 
 /* =========================================================
    INPUT
@@ -2638,34 +2914,46 @@ function handlePointerDown(e){
   const pos=getCanvasCoords(e);
   if(pos.x>=BTN_BGM.x&&pos.x<=BTN_BGM.x+BTN_BGM.w&&pos.y>=BTN_BGM.y&&pos.y<=BTN_BGM.y+BTN_BGM.h){AudioSys.toggleBgm();return;}
   if(pos.x>=BTN_CRT.x&&pos.x<=BTN_CRT.x+BTN_CRT.w&&pos.y>=BTN_CRT.y&&pos.y<=BTN_CRT.y+BTN_CRT.h){STATE.crtEnabled=!STATE.crtEnabled;AudioSys.playSelect(540);return;}
-  // TITLE
+  if(pos.x>=BTN_MODE.x&&pos.x<=BTN_MODE.x+BTN_MODE.w&&pos.y>=BTN_MODE.y&&pos.y<=BTN_MODE.y+BTN_MODE.h){ toggleInputMode(); return; }
+  // TITLE — only the visible Start button is interactive.
   if(STATE.turnPhase==="TITLE"){
-    AudioSys.playSpecial();AudioSys.startBgm();startWalkInTransition();return;
+    if(pos.x>=BTN_TITLE_START.x&&pos.x<=BTN_TITLE_START.x+BTN_TITLE_START.w&&
+       pos.y>=BTN_TITLE_START.y&&pos.y<=BTN_TITLE_START.y+BTN_TITLE_START.h){
+      AudioSys.playSpecial();AudioSys.startBgm();startWalkInTransition();
+    }
+    return;
   }
   // CAMPFIRE
   if(STATE.turnPhase==="CAMPFIRE"){handleCampfireClick(pos.x,pos.y);return;}
   // GAME OVER
   if(isCombatFinished()){ if(performance.now()-STATE.overSince<900) return; resetGame(); return; }
 
-  // HERO_READY: skill buttons + tombol MULAI
+  // HERO_READY
   if(STATE.turnPhase==="HERO_READY"){
     const SKILL_BTNS=[{x:485,y:450,w:230,h:64},{x:725,y:450,w:230,h:64}];
     for(let i=0;i<SKILL_BTNS.length;i++){
       const b=SKILL_BTNS[i];
       if(pos.x>=b.x&&pos.x<=b.x+b.w&&pos.y>=b.y&&pos.y<=b.y+b.h){STATE.selectedSkillIndex=i;AudioSys.playSelect(520);return;}
     }
-    // Tombol MULAI (panel kiri bawah)
     if(pos.x>=36&&pos.x<=444&&pos.y>=620&&pos.y<=648){ beginHeroTypingTurn(); return; }
     return;
   }
-  // HERO_TYPING: klik tidak ada aksi
-  if(STATE.turnPhase==="HERO_TYPING"){ return; }
-  // HERO_TURN_END: klik LANJUT
+  // HERO_TYPING: shortcut keyboard dimatikan; skip tersedia sebagai tombol UI.
+  if(STATE.turnPhase==="HERO_TYPING"){
+    if(pos.x>=BTN_SKIP_WORD.x&&pos.x<=BTN_SKIP_WORD.x+BTN_SKIP_WORD.w&&
+       pos.y>=BTN_SKIP_WORD.y&&pos.y<=BTN_SKIP_WORD.y+BTN_SKIP_WORD.h){
+      skipCurrentWord();
+      return;
+    }
+    if(STATE.inputMode==="TAP"){ handleBubbleTap(pos.x, pos.y); }
+    return;
+  }
+  // HERO_TURN_END
   if(STATE.turnPhase==="HERO_TURN_END"){
     if(pos.x>=340&&pos.x<=640&&pos.y>=555&&pos.y<=615){ advanceTurn(); return; }
     return;
   }
-  // Lainnya: klik musuh untuk target
+  // Lainnya
   if(!canPlayerAct()) return;
   enemies.forEach((en,idx)=>{
     if(en.hp>0){
@@ -2681,10 +2969,50 @@ canvas.addEventListener("pointerdown", handlePointerDown);
 
 window.addEventListener("keydown",(e)=>{
   AudioSys.init();
-  if(e.code==="KeyM"){AudioSys.toggleBgm();return;}
-  if(e.code==="KeyC"){STATE.crtEnabled=!STATE.crtEnabled;AudioSys.playSelect(540);return;}
 
+  // ══════════════════════════════════════════════════════════
+  // PRIORITAS TERTINGGI: HERO_TYPING
+  // Hanya Enter + karakter A-Z yang diproses saat typing.
+  // SEMUA shortcut keyboard game dimatikan di fase ini agar tidak
+  // pernah bertabrakan dengan karakter yang sedang diketik.
+  // ══════════════════════════════════════════════════════════
+  if(STATE.turnPhase==="HERO_TYPING"){
+    const isModifier = e.ctrlKey || e.altKey || e.metaKey;
+
+    // 1. ENTER — selesai sesi
+    if(e.code==="Enter" && !isModifier){
+      e.preventDefault();
+      finishHeroTypingTurn();
+      return;
+    }
+
+    // 2. A-Z hanya di TYPE mode (bukan shortcut, tapi mekanik inti)
+    if(!isModifier && e.key.length===1 && /[a-zA-Z]/.test(e.key)){
+      e.preventDefault();
+      if(STATE.inputMode==="TYPE"){
+        handleTypingKey(e.key);
+      }
+      // Di TAP mode: abaikan input keyboard A-Z
+      return;
+    }
+
+    // 3. Semua tombol shortcut/game lainnya diblokir total.
+    if(!isModifier){
+      e.preventDefault();
+    }
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // Shortcut global (aktif di luar HERO_TYPING)
+  // ══════════════════════════════════════════════════════════
+  if(e.code==="F2"){e.preventDefault();AudioSys.toggleBgm();return;}
+  if(e.code==="F3"){e.preventDefault();STATE.crtEnabled=!STATE.crtEnabled;AudioSys.playSelect(540);return;}
+  if(e.code==="F1"){e.preventDefault();toggleInputMode();return;}
+
+  // ══════════════════════════════════════════════════════════
   // TITLE
+  // ══════════════════════════════════════════════════════════
   if(STATE.turnPhase==="TITLE"){
     if(e.code==="Enter"||e.code==="Space"){
       e.preventDefault();
@@ -2692,7 +3020,10 @@ window.addEventListener("keydown",(e)=>{
     }
     return;
   }
+
+  // ══════════════════════════════════════════════════════════
   // CAMPFIRE
+  // ══════════════════════════════════════════════════════════
   if(STATE.turnPhase==="CAMPFIRE"){
     if(e.code==="Enter"||e.code==="Space"){
       e.preventDefault();
@@ -2704,7 +3035,10 @@ window.addEventListener("keydown",(e)=>{
     }
     return;
   }
-  // GAME OVER
+
+  // ══════════════════════════════════════════════════════════
+  // GAME OVER / VICTORY
+  // ══════════════════════════════════════════════════════════
   if(isCombatFinished()){
     if(e.code==="Enter"||e.code==="Space"){
       e.preventDefault();
@@ -2712,30 +3046,27 @@ window.addEventListener("keydown",(e)=>{
     }
     return;
   }
+
+  // ══════════════════════════════════════════════════════════
   // HERO_READY
+  // ══════════════════════════════════════════════════════════
   if(STATE.turnPhase==="HERO_READY"){
     if(e.code==="Digit1"||e.code==="Numpad1"){ STATE.selectedSkillIndex=0; AudioSys.playSelect(500); return; }
     if(e.code==="Digit2"||e.code==="Numpad2"){ STATE.selectedSkillIndex=1; AudioSys.playSelect(500); return; }
     if(e.code==="Enter"||e.code==="Space"){ e.preventDefault(); beginHeroTypingTurn(); return; }
     if(e.code==="Tab"){ e.preventDefault(); skipTurn(); return; }
-    if(e.code==="KeyU"){ triggerPartyRush(); return; }
+    if(e.code==="F4"){ e.preventDefault(); triggerPartyRush(); return; }
     return;
   }
-  // HERO_TYPING — hanya A-Z, R, Enter
-  if(STATE.turnPhase==="HERO_TYPING"){
-    if(e.code==="Enter"){ e.preventDefault(); finishHeroTypingTurn(); return; }
-    if(e.code==="Backspace"||e.code==="Escape"){ e.preventDefault(); return; }
-    if(e.code==="KeyR"){ e.preventDefault(); skipCurrentWord(); return; }
-    if(e.key.length===1 && /[a-zA-Z]/.test(e.key)){ e.preventDefault(); handleTypingKey(e.key); }
-    return;
-  }
+
+  // ══════════════════════════════════════════════════════════
   // HERO_TURN_END
+  // ══════════════════════════════════════════════════════════
   if(STATE.turnPhase==="HERO_TURN_END"){
     if(e.code==="Enter"||e.code==="Space"){ e.preventDefault(); advanceTurn(); }
     return;
   }
 });
-
 /* =========================================================
    MAIN LOOP
    ========================================================= */
@@ -2749,7 +3080,7 @@ function gameLoop(timestamp){
     if(STATE.hitFreezeTimer>0){requestAnimationFrame(gameLoop);return;}
     STATE.hitFreezeTimer=0;
   }
-  // Update turn timer kalau sedang mengetik
+  // Update turn timer
   if(STATE.turnPhase==="HERO_TYPING"){
     STATE.turnElapsed = performance.now() - STATE.turnTimeStart;
     if(STATE.turnElapsed >= STATE.turnTimeLimit){
