@@ -2145,33 +2145,98 @@ const SKILL_HANDLERS={
     });
   },
   AOE_ATTACK:(c)=>{
-    const {hero,skill,totalPower,isCrit,hasFireTile,hasFrostTile,hasLightningTile,word,actionId}=c;
-    const proj=skill.projectile||{type:"fireball",color:"#f97316",trailColor:"#ef4444",size:24};
+  const {hero,skill,totalPower,isCrit,hasFireTile,hasFrostTile,hasLightningTile,word,actionId}=c;
+  const proj=skill.projectile||{type:"fireball",color:"#f97316",trailColor:"#ef4444",size:24};
+  const aliveEnemies = enemies.filter(e=>e.hp>0);
+
+  // Helper: efek status per musuh (dipakai di kedua mode)
+  const applyStatus = (en)=>{
+    if(hasFireTile && en.hp>0) en.burnTurns=2;
+    if(hasFrostTile && en.hp>0){ en.frozen=true; en.intent={type:"FROZEN",desc:"❄️ Membeku"}; }
+  };
+
+  // Helper: petir berantai ke semua musuh (efek global)
+  const applyLightningChain = ()=>{
+    if(!hasLightningTile) return;
+    AudioSys.playZap();
+    enemies.forEach(en=>{ 
+      if(!isActionValid(actionId)) return; 
+      if(en.hp>0) applyDamage(hero,en,BALANCE.chainZapDamage,{
+        label:`-${BALANCE.chainZapDamage} ⚡`, color:"#67e8f9", particleColor:"#38bdf8"
+      });
+    });
+  };
+
+  if(proj.fromTop){
+    // ===== HUJAN PANAH: 1 proyektil per musuh =====
+    if(aliveEnemies.length===0){ finishHeroAction(actionId); return; }
+
+    let remaining = aliveEnemies.length;
+    // Set ledger manual (karena countPending:false)
+    STATE.projectileLedger = {actionId, pending: aliveEnemies.length};
+
+    aliveEnemies.forEach((en)=>{
+      createProjectile({
+        actionId, countPending:false,
+        x: en.x + (Math.random()-0.5)*24,   // sedikit variasi visual
+        y: 0,                               // dari atas langit-langit
+        targetX: en.x, targetY: en.y,
+        color: proj.color, trailColor: proj.trailColor,
+        size: proj.size||16, type: proj.type||"arrow",
+        onHit:()=>{
+          if(!isActionValid(actionId)) return;
+          AudioSys.playBow();
+          const ad = applyDamage(hero, en, totalPower, {
+            isCrit, label:`-${totalPower}`,
+            particleColor:(skill.options&&skill.options.particleColor)||"#facc15"
+          });
+          applyStatus(en);
+          if(ad > STATE.stats.bestWordDmg){
+            STATE.stats.bestWord = word;
+            STATE.stats.bestWordDmg = ad;
+          }
+          // Efek global dijalankan sekali, setelah panah terakhir mendarat
+          remaining--;
+          if(remaining===0){
+            if(hasFrostTile) AudioSys.playFreeze();
+            applyLightningChain();
+          }
+        }
+      });
+    });
+
+  } else {
+    // ===== BOLA API: 1 proyektil AoE dari hero =====
     createProjectile({
-      actionId,x:hero.x-30,y:hero.y-20,targetX:250,targetY:160,
-      color:proj.color,trailColor:proj.trailColor,size:proj.size||24,type:proj.type||"fireball",
+      actionId,
+      x: hero.x-30, y: hero.y-20,
+      targetX: 250, targetY: 160,
+      color: proj.color, trailColor: proj.trailColor,
+      size: proj.size||24, type: proj.type||"fireball",
       onHit:()=>{
         if(!isActionValid(actionId)) return;
-        if(proj.type==="arrow") AudioSys.playBow(); else AudioSys.playMagic();
-        let totalAoE=0;
+        AudioSys.playMagic();
+        let totalAoE = 0;
         for(const en of enemies){
           if(isCombatFinished()||!isActionValid(actionId)) break;
           if(en.hp<=0) continue;
-          const ad=applyDamage(hero,en,totalPower,{isCrit,label:`-${totalPower}`,particleColor:(skill.options&&skill.options.particleColor)||"#f97316"});
-          totalAoE+=ad;
-          if(hasFireTile&&en.hp>0) en.burnTurns=2;
-          if(hasFrostTile&&en.hp>0){en.frozen=true;en.intent={type:"FROZEN",desc:"❄️ Membeku"};}
-          if(isCombatFinished()||!isActionValid(actionId)) break;
+          const ad = applyDamage(hero,en,totalPower,{
+            isCrit, label:`-${totalPower}`,
+            particleColor:(skill.options&&skill.options.particleColor)||"#f97316"
+          });
+          totalAoE += ad;
+          applyStatus(en);
         }
         if(hasFrostTile) AudioSys.playFreeze();
-        if(hasLightningTile){
-          AudioSys.playZap();
-          enemies.forEach(en=>{if(en.hp>0) applyDamage(hero,en,BALANCE.chainZapDamage,{label:`-${BALANCE.chainZapDamage} ⚡`,color:"#67e8f9",particleColor:"#38bdf8"});});
+        applyLightningChain();
+        if(totalAoE > STATE.stats.bestWordDmg){
+          STATE.stats.bestWord = word;
+          STATE.stats.bestWordDmg = totalAoE;
         }
-        if(totalAoE>STATE.stats.bestWordDmg){STATE.stats.bestWord=word;STATE.stats.bestWordDmg=totalAoE;}
       }
     });
-  },
+  }
+},
   SMITE_HEAL:(c)=>{
     const {hero,skill,targetEnemy,totalPower,mult,isCrit,word,actionId}=c;
     if(!targetEnemy){finishHeroAction(actionId);return;}
@@ -2483,7 +2548,7 @@ function drawCharacterSprite(entity,isCurrentTurn,isTargeted,isWalking=false){
     }
   }
 
-  if(!isWalking){
+  if(!isWalking && !isDead){
     const barW=66,barH=7;
     const barX=finalX-barW/2;
     const barY=drawY+60;
