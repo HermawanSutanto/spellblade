@@ -1705,7 +1705,12 @@ function finishHeroAction(actionId){
   if(!isActionValid(actionId)||isCombatFinished()) return;
   const h=heroes[STATE.activeHeroIndex];
   if(h){h.animOffset=0;h.isActing=false;}
-  setTimeout(()=>{if(!isActionValid(actionId)||isCombatFinished()) return;advanceTurn();},280);
+  const tryAdvance=()=>{
+    if(!isActionValid(actionId)||isCombatFinished()) return;
+    if(STATE.boardLocked){ setTimeout(tryAdvance,100); return; }
+    advanceTurn();
+  };
+  setTimeout(tryAdvance,280);
 }
 function createProjectile(config){
   if(config.countPending!==false){
@@ -1982,7 +1987,16 @@ function triggerPartyRush(){
     },idx*160);
   });
 }
-
+function resetGame(){
+  STATE.turnPhase="TITLE";
+  STATE.wave=1; STATE.shuffles=3; STATE.rushGauge=35;
+  STATE.relics=[]; STATE.offeredRelics=[];
+  STATE.stats={wordsCount:0,bestWord:"-",bestWordDmg:0,totalDamageDealt:0};
+  STATE.projectiles=[]; STATE.particles=[]; STATE.damageNumbers=[];
+  heroes.forEach(h=>{h.hp=h.maxHp;h.mp=h.maxMp;h.x=h.baseX;h.isActing=false;h.stunned=false;h.frozen=false;h.burnTurns=0;h.poisonTurns=0;});
+  enemies=makeWave(1);
+  initGrid();
+}
 function handlePointerDown(e){
   AudioSys.init();
   const pos=getCanvasCoords(e);
@@ -1998,7 +2012,11 @@ function handlePointerDown(e){
     return;
   }
   if(STATE.turnPhase==="CAMPFIRE"){handleCampfireClick(pos.x,pos.y);return;}
-  if(isCombatFinished()){if(performance.now()-STATE.overSince<900) return;window.location.reload();return;}
+  if(isCombatFinished()){
+  if(performance.now()-STATE.overSince<900) return;
+  resetGame();
+  return;
+}
   if(!canPlayerAct()) return;
   enemies.forEach((en,idx)=>{
     if(en.hp>0){
@@ -2262,10 +2280,13 @@ const SKILL_HANDLERS={
   },
   AOE_HEAL:(c)=>{
     const {hero,totalPower,actionId}=c;
+    const aoeHeal = Math.round(totalPower * 0.55);  // heal per hero = 55% total power
     AudioSys.playHeal();
-    heroes.forEach(h=>{if(h.hp>0) applyHealing(hero,h,totalPower);});
+    heroes.forEach(h=>{
+      if(h.hp>0) applyHealing(hero, h, aoeHeal);
+    });
     finishHeroAction(actionId);
-  }
+}
 };
 
 const ENEMY_ACTION_HANDLERS={
