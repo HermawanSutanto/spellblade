@@ -1,0 +1,2840 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Spellblade: Typing Dungeon Party</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;user-select:none;-webkit-user-select:none}
+body{background:#040508;color:#e2e8f0;font-family:'Courier New',Courier,monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;overflow-x:hidden;padding:6px}
+#game-container{position:relative;width:100%;max-width:980px;aspect-ratio:980/650;box-shadow:0 16px 50px rgba(0,0,0,.95),0 0 35px rgba(99,102,241,.35);border:3px solid #1e293b;border-radius:8px;overflow:hidden;background:#090b14}
+canvas{display:block;width:100%;height:100%;image-rendering:pixelated;touch-action:none;cursor:default}
+.instructions{margin-top:8px;font-size:11px;color:#94a3b8;text-align:center;max-width:980px;line-height:1.5}
+.kbd{background:#1e293b;color:#f8fafc;padding:2px 5px;border-radius:4px;border:1px solid #334155;font-weight:bold}
+#orientation-warning{display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:#040508;z-index:9999;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
+#orientation-warning h2{font-size:19px;color:#facc15;margin-bottom:8px}
+#orientation-warning p{font-size:13px;color:#94a3b8;max-width:320px;line-height:1.6}
+@media (max-width:900px) and (orientation:portrait){#orientation-warning{display:flex}#game-container,.instructions{display:none}}
+</style>
+</head>
+<body>
+
+<div id="orientation-warning">
+<h2>PUTAR KE POSISI MENDATAR</h2>
+<p>Untuk kenyamanan mengetik dan formasi pertempuran, mohon putar perangkat Anda ke mode Landscape.</p>
+</div>
+
+<div id="game-container">
+<canvas id="gameCanvas" width="980" height="650"></canvas>
+</div>
+<div class="instructions">
+⌨️ <b>Ketik sebanyak mungkin dalam waktu sesi!</b> • <span class="kbd">1</span>/<span class="kbd">2</span> Pilih skill • <span class="kbd">ENTER</span> Mulai/Selesai • <span class="kbd">R</span> Skip kata • <span class="kbd">Tab</span> Bertahan • <span class="kbd">U</span> RUSH • <span class="kbd">M</span> BGM • <span class="kbd">C</span> CRT
+</div>
+
+<script>
+/* =========================================================
+   BALANCE & AUDIO
+   ========================================================= */
+const BALANCE={burnDamage:14,chainZapDamage:12,starMultiplierBonus:1.5,guardMultiplier:0.60,campfireHealPercent:0.40,enemyBaseDamage:12,enemyWaveDamage:3.5,turnMpRegen:7,grailBonusMp:4,skipMp:9,manaTileMp:15,poisonTileDamage:6,doomDamage:26,quillHeal:14,vampireLeechPercent:0.25,magmaFireBonus:14,crisisThreshold:0.35,crisisMultiplier:1.4,maxParticles:450,wrongKeyStunMs:250,skipDamageFactor:0.8,themeBonusMultiplier:1.25};
+function getEnemyAttackPower(wave,isCaster=false){if(isCaster) return 12+wave*4;return Math.round(BALANCE.enemyBaseDamage+wave*BALANCE.enemyWaveDamage);}
+
+const AudioSys={ctx:null,bgmInterval:null,bgmPlaying:false,step:0,lastBeatTime:0,
+init(){if(!this.ctx){const AC=window.AudioContext||window.webkitAudioContext;this.ctx=new AC();}if(this.ctx&&this.ctx.state==='suspended') this.ctx.resume();},
+toggleBgm(){this.init();this.bgmPlaying?this.stopBgm():this.startBgm();},
+startBgm(){if(this.bgmPlaying) return;this.bgmPlaying=true;this.lastBeatTime=performance.now();const bass=[110,110,130.81,146.83,110,164.81,146.83,123.47];const leads=[220,0,261.63,293.66,329.63,392.00,293.66,246.94];this.bgmInterval=setInterval(()=>{if(!this.ctx||!this.bgmPlaying) return;const t=this.ctx.currentTime;this.lastBeatTime=performance.now();const bf=bass[this.step%bass.length];const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='triangle';o.frequency.setValueAtTime(bf,t);g.gain.setValueAtTime(0.07,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.17);o.connect(g);g.connect(this.ctx.destination);o.start(t);o.stop(t+0.17);const lf=leads[this.step%leads.length];if(lf>0&&Math.random()<0.88){const lo=this.ctx.createOscillator(),lg=this.ctx.createGain();lo.type='square';lo.frequency.setValueAtTime(lf,t);lg.gain.setValueAtTime(0.025,t);lg.gain.exponentialRampToValueAtTime(0.001,t+0.20);lo.connect(lg);lg.connect(this.ctx.destination);lo.start(t);lo.stop(t+0.20);}this.step++;},175);},
+stopBgm(){this.bgmPlaying=false;if(this.bgmInterval){clearInterval(this.bgmInterval);this.bgmInterval=null;}},
+playSelect(p=440){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='triangle';o.frequency.setValueAtTime(p,this.ctx.currentTime);g.gain.setValueAtTime(.12,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.01,this.ctx.currentTime+.08);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.08);},
+playKeyOk(p){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sine';o.frequency.setValueAtTime(p,this.ctx.currentTime);o.frequency.exponentialRampToValueAtTime(p*1.15,this.ctx.currentTime+.05);g.gain.setValueAtTime(.08,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.005,this.ctx.currentTime+.07);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.07);},
+playKeyBad(){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='square';o.frequency.setValueAtTime(180,this.ctx.currentTime);o.frequency.exponentialRampToValueAtTime(80,this.ctx.currentTime+.12);g.gain.setValueAtTime(.12,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.005,this.ctx.currentTime+.14);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.14);},
+playSlash(){if(!this.ctx)return;const n=this.ctx.createBufferSource(),b=this.ctx.createBuffer(1,this.ctx.sampleRate*.15,this.ctx.sampleRate),d=b.getChannelData(0);for(let i=0;i<b.length;i++)d[i]=Math.random()*2-1;n.buffer=b;const f=this.ctx.createBiquadFilter();f.type='bandpass';f.frequency.setValueAtTime(1400,this.ctx.currentTime);f.frequency.exponentialRampToValueAtTime(120,this.ctx.currentTime+.15);const g=this.ctx.createGain();g.gain.setValueAtTime(.35,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.01,this.ctx.currentTime+.15);n.connect(f);f.connect(g);g.connect(this.ctx.destination);n.start();},
+playBow(){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sine';o.frequency.setValueAtTime(800,this.ctx.currentTime);o.frequency.exponentialRampToValueAtTime(240,this.ctx.currentTime+.18);g.gain.setValueAtTime(.25,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.001,this.ctx.currentTime+.18);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.18);},
+playMagic(){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sawtooth';o.frequency.setValueAtTime(320,this.ctx.currentTime);o.frequency.exponentialRampToValueAtTime(960,this.ctx.currentTime+.28);g.gain.setValueAtTime(.22,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.01,this.ctx.currentTime+.3);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.3);},
+playFreeze(){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sine';o.frequency.setValueAtTime(1100,this.ctx.currentTime);o.frequency.exponentialRampToValueAtTime(1600,this.ctx.currentTime+.22);g.gain.setValueAtTime(.2,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.001,this.ctx.currentTime+.25);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.25);},
+playZap(){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sawtooth';o.frequency.setValueAtTime(700,this.ctx.currentTime);o.frequency.linearRampToValueAtTime(180,this.ctx.currentTime+.12);g.gain.setValueAtTime(.26,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.01,this.ctx.currentTime+.15);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.15);},
+playHeal(){if(!this.ctx)return;[523.25,659.25,783.99,1046.5].forEach((f,i)=>{const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sine';o.frequency.setValueAtTime(f,this.ctx.currentTime+i*.05);g.gain.setValueAtTime(.12,this.ctx.currentTime+i*.05);g.gain.exponentialRampToValueAtTime(.001,this.ctx.currentTime+i*.05+.2);o.connect(g);g.connect(this.ctx.destination);o.start(this.ctx.currentTime+i*.05);o.stop(this.ctx.currentTime+i*.05+.2);});},
+playSubmitSuccess(speedMult){if(!this.ctx)return;const base=480*(0.9+speedMult*0.1),notes=[base,base*1.25,base*1.5,base*2];notes.forEach((f,i)=>{const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='square';o.frequency.setValueAtTime(f,this.ctx.currentTime+i*.05);g.gain.setValueAtTime(.14,this.ctx.currentTime+i*.05);g.gain.exponentialRampToValueAtTime(.01,this.ctx.currentTime+i*.05+.16);o.connect(g);g.connect(this.ctx.destination);o.start(this.ctx.currentTime+i*.05);o.stop(this.ctx.currentTime+i*.05+.16);});},
+playSpecial(){if(!this.ctx)return;[580,780,1050,1400].forEach((f,i)=>{const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sine';o.frequency.setValueAtTime(f,this.ctx.currentTime+i*.04);g.gain.setValueAtTime(.14,this.ctx.currentTime+i*.04);g.gain.exponentialRampToValueAtTime(.01,this.ctx.currentTime+i*.04+.14);o.connect(g);g.connect(this.ctx.destination);o.start(this.ctx.currentTime+i*.04);o.stop(this.ctx.currentTime+i*.04+.14);});},
+playCampfire(){if(!this.ctx)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.type='sine';o.frequency.setValueAtTime(330,this.ctx.currentTime);o.frequency.exponentialRampToValueAtTime(660,this.ctx.currentTime+.4);g.gain.setValueAtTime(.14,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.001,this.ctx.currentTime+.45);o.connect(g);g.connect(this.ctx.destination);o.start();o.stop(this.ctx.currentTime+.45);},
+playExplode(){if(!this.ctx)return;const n=this.ctx.createBufferSource(),b=this.ctx.createBuffer(1,this.ctx.sampleRate*.35,this.ctx.sampleRate),d=b.getChannelData(0);for(let i=0;i<b.length;i++)d[i]=Math.random()*2-1;n.buffer=b;const f=this.ctx.createBiquadFilter();f.type='lowpass';f.frequency.setValueAtTime(450,this.ctx.currentTime);f.frequency.exponentialRampToValueAtTime(40,this.ctx.currentTime+.35);const g=this.ctx.createGain();g.gain.setValueAtTime(.5,this.ctx.currentTime);g.gain.exponentialRampToValueAtTime(.01,this.ctx.currentTime+.35);n.connect(f);f.connect(g);g.connect(this.ctx.destination);n.start();}};
+
+/* =========================================================
+   PIXEL SYSTEM
+   ========================================================= */
+const SPRITE_SIZE = 48;
+const SPRITE_SCALE = 1.85;
+
+class PixelCanvas {
+  constructor(w=SPRITE_SIZE, h=SPRITE_SIZE){
+    this.canvas=document.createElement("canvas");
+    this.canvas.width=w; this.canvas.height=h;
+    this.ctx=this.canvas.getContext("2d");
+    this.ctx.imageSmoothingEnabled=false;
+    this.w=w; this.h=h;
+  }
+  px(x,y,c){x=Math.floor(x);y=Math.floor(y);if(x<0||y<0||x>=this.w||y>=this.h)return;this.ctx.fillStyle=c;this.ctx.fillRect(x,y,1,1);}
+  rect(x,y,w,h,c){x=Math.floor(x);y=Math.floor(y);w=Math.floor(w);h=Math.floor(h);if(w<=0||h<=0)return;this.ctx.fillStyle=c;this.ctx.fillRect(x,y,w,h);}
+  plate(x,y,w,h,hi,mid,sh){this.rect(x,y,w,h,mid);this.rect(x,y,w,1,hi);this.rect(x,y+h-1,w,1,sh);this.rect(x,y,1,h,hi);this.rect(x+w-1,y,1,h,sh);}
+  ellipse(cx,cy,rx,ry,color){for(let y=-ry;y<=ry;y++){const w=Math.floor(rx*Math.sqrt(Math.max(0,1-(y*y)/(ry*ry))));this.rect(cx-w,cy+y,w*2+1,1,color);}}
+  line(x0,y0,x1,y1,color){x0|=0;y0|=0;x1|=0;y1|=0;const dx=Math.abs(x1-x0),dy=-Math.abs(y1-y0);const sx=x0<x1?1:-1,sy=y0<y1?1:-1;let err=dx+dy;while(true){this.px(x0,y0,color);if(x0===x1&&y0===y1)break;const e2=2*err;if(e2>=dy){err+=dy;x0+=sx;}if(e2<=dx){err+=dx;y0+=sy;}}}
+  outline(color="#0a0712",threshold=40){const w=this.w,h=this.h;const d=this.ctx.getImageData(0,0,w,h).data;const A=(x,y)=>(x<0||y<0||x>=w||y>=h)?0:d[(y*w+x)*4+3];const pts=[];for(let y=0;y<h;y++)for(let x=0;x<w;x++){if(A(x,y)>threshold)continue;if(A(x-1,y)>threshold||A(x+1,y)>threshold||A(x,y-1)>threshold||A(x,y+1)>threshold)pts.push(x,y);}this.ctx.fillStyle=color;for(let i=0;i<pts.length;i+=2)this.ctx.fillRect(pts[i],pts[i+1],1,1);}
+  speckle(x,y,w,h,color,density=0.06){for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++){if(Math.random()<density)this.px(xx,yy,color);}}
+}
+function makeSilhouette(src, color){const c=document.createElement("canvas");c.width=src.width;c.height=src.height;const x=c.getContext("2d");x.imageSmoothingEnabled=false;x.drawImage(src,0,0);x.globalCompositeOperation="source-in";x.fillStyle=color;x.fillRect(0,0,c.width,c.height);return c;}
+
+/* ═══════════════════════════════════════════════════════════
+   ╔═══════════════════════════════════════════════════════╗
+   ║   PASTE SPRITE LIBRARY DI SINI                          ║
+   ║   Copy dari: const SpriteLibrary = { ... };             ║
+   ║   Sampai sebelum: const RAW_WORDS=[...]                 ║
+   ╚═══════════════════════════════════════════════════════╝
+   ═══════════════════════════════════════════════════════════ */
+/* Contoh minimal (GANTI dengan yang lengkap dari file lamamu): */
+const SpriteLibrary = {
+  sprites:{}, flashes:{},
+  init(){
+    const HERO_BUILDERS={warrior:(f,s,v)=>this.buildWarrior(f,s,v),ranger:(f,s,v)=>this.buildRanger(f,s,v),mage:(f,s,v)=>this.buildMage(f,s,v),cleric:(f,s,v)=>this.buildCleric(f,s,v)};
+    const ENEMY_BUILDERS={slime:(f,s,v)=>this.buildSlime(f,s,v),orc:(f,s,v)=>this.buildOrc(f,s,v),drakonit:(f,s,v)=>this.buildDrakonit(f,s,v),golem:(f,s,v)=>this.buildGolem(f,s,v),wyrm:(f,s,v)=>this.buildWyrm(f,s,v)};
+    const heroStates={idle:4,walk:6,act1:5,act2:5,hurt:2};
+    const enemyStates={idle:4,act1:5,act2:5,hurt:2};
+    const register=(key,fn,states)=>{
+      for(const st in states)for(let f=0;f<states[st];f++){
+        if(st==="act1"||st==="act2")for(let v=0;v<2;v++){const cs=fn(f,st,v);const id=`${key}_${st}_${v}_${f}`;this.sprites[id]=cs;this.flashes[id]=makeSilhouette(cs,"#ffffff");}
+        else{const cs=fn(f,st,0);const id=`${key}_${st}_${f}`;this.sprites[id]=cs;this.flashes[id]=makeSilhouette(cs,"#ffffff");}
+      }
+    };
+    for(const k in HERO_BUILDERS)register(k,HERO_BUILDERS[k],heroStates);
+    for(const k in ENEMY_BUILDERS)register(k,ENEMY_BUILDERS[k],enemyStates);
+  },
+  /* ⬇⬇⬇ SALIN SEMUA buildWarrior/buildRanger/buildMage/buildCleric ⬇⬇⬇ */
+  /* ⬇⬇⬇ buildSlime/buildOrc/buildDrakonit/buildGolem/buildWyrm ⬇⬇⬇ */
+  /* dari file lamamu di sini */
+  /* =========================================================
+     KSATRIA — armor baja merah, pedang besar, perisai
+     act1 = tebasan diagonal | act2 = hantaman perisai + stun
+     ========================================================= */
+  buildWarrior(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isWalk = state==="walk";
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      pl:"#fca5a5", pr:"#ef4444", pd:"#991b1b", ps:"#7f1d1d",
+      bd:"#1e293b", bs:"#475569", bm:"#94a3b8", bh:"#cbd5e1", bb:"#e2e8f0",
+      sk:"#fde68a", skS:"#d97706",
+      gd:"#eab308", gdL:"#fde047",
+      eye:"#38bdf8"
+    };
+
+    let bob=0;
+    if(state==="idle") bob=[0,1,2,1][frame]||0;
+    else if(isWalk) bob=[0,1,2,1,2,1][frame]||0;
+    else if(isAct1||isAct2) bob=[0,-1,-2,-1,0][frame]||0;
+    else if(isHurt) bob=2;
+
+    // Lunge per frame (5 frame: windup, peak, strike, hold, recover)
+    let lunge=0, armAngle=0;
+    if(isAct1){
+      // Tebasan: mundur lalu maju tajam
+      lunge=[3,4,-10,-8,-2][frame];
+      armAngle=[0,0.3,-1.1,-0.9,-0.3][frame];
+    } else if(isAct2){
+      // Perisai: maju dengan lunge kuat
+      lunge=[2,3,-14,-10,-3][frame];
+    } else if(isHurt){
+      lunge=(frame===0?5:3);
+    }
+
+    const ox = 24 + lunge;      // origin X (tengah)
+    const oy = 24 + bob;
+
+    // ====== Kaki (belakang & depan) ======
+    let bLx=0,bLy=0,fLx=0,fLy=0;
+    if(isWalk){
+      const t=[[-4,0,3,0],[-2,-1,1,0],[0,0,-1,0],[2,0,-3,0],[1,-1,-2,0],[-1,0,2,0]][frame];
+      fLx=t[0];fLy=t[1];bLx=t[2];bLy=t[3];
+    } else if(isHurt) fLx=2;
+
+    // Kaki belakang (kiri)
+    pc.rect(ox-8+bLx, oy+5+bLy, 6, 12, C.bs);
+    pc.rect(ox-8+bLx, oy+5+bLy, 6, 2, C.bm);
+    pc.rect(ox-9+bLx, oy+16+bLy, 8, 4, "#111827");
+    pc.rect(ox-9+bLx, oy+16+bLy, 8, 1, "#374151");
+
+    // Kaki depan (kanan)
+    pc.rect(ox+2+fLx, oy+5+fLy, 6, 12, C.bm);
+    pc.rect(ox+2+fLx, oy+5+fLy, 6, 2, C.bh);
+    pc.rect(ox+1+fLx, oy+16+fLy, 8, 4, "#1f2937");
+    pc.rect(ox+1+fLx, oy+16+fLy, 8, 1, "#4b5563");
+
+    // ====== Jubah belakang ======
+    pc.rect(ox-11, oy-9, 8, 22, C.ps);
+    pc.rect(ox-10, oy-8, 6, 20, C.pd);
+    pc.rect(ox-10, oy-8, 6, 2, C.pr);
+    for(let i=0;i<6;i++) pc.px(ox-8 + (i%3===0?1:0), oy+8+i*2, C.ps);
+
+    // ====== Torso armor ======
+    pc.plate(ox-9, oy-8, 20, 16, C.pl, C.pr, C.pd);
+    pc.rect(ox-7, oy-6, 6, 8, C.pl);   // dada highlight
+    pc.rect(ox+2, oy-6, 4, 8, C.pd);   // perut shadow
+
+    // Sabuk
+    pc.rect(ox-9, oy+6, 20, 4, C.bd);
+    pc.rect(ox-9, oy+6, 20, 1, C.bm);
+    pc.rect(ox-3, oy+6, 4, 4, C.gd);
+    pc.rect(ox-2, oy+7, 2, 2, C.gdL);
+
+    // Pauldron
+    pc.plate(ox-13, oy-9, 6, 8, C.bh, C.bm, C.bs);
+    pc.plate(ox+7, oy-9, 6, 8, C.bh, C.bm, C.bs);
+    pc.px(ox-11, oy-6, C.gd); pc.px(ox+9, oy-6, C.gd);
+
+    // ====== Kepala & helm ======
+    pc.rect(ox-7, oy-20, 14, 10, C.bm);
+    pc.rect(ox-6, oy-19, 12, 8, C.bh);
+    // Visor gelap
+    pc.rect(ox-6, oy-15, 12, 5, "#0b1220");
+    pc.px(ox-3, oy-13, C.eye); pc.px(ox+2, oy-13, C.eye);
+    pc.px(ox-3, oy-14, "#a5f3fc"); pc.px(ox+2, oy-14, "#a5f3fc");
+    // Crest helm
+    pc.rect(ox-7, oy-23, 14, 3, C.bm);
+    pc.rect(ox-6, oy-23, 12, 1, C.bh);
+    // Plume
+    pc.rect(ox-3, oy-28, 6, 5, C.pr);
+    pc.rect(ox-2, oy-28, 4, 3, C.pl);
+
+    // ====== Tangan & senjata ======
+    if(isAct1){
+      // Tebasan diagonal: pedang berputar dari atas
+      const sw = Math.round(Math.sin(armAngle)*2);
+      const sh = Math.round(Math.cos(armAngle)*2);
+      // Tangan kanan naik
+      pc.rect(ox+8, oy-14, 5, 8, C.bs);
+      pc.rect(ox+8, oy-14, 5, 2, C.bm);
+      // Pedang panjang
+      const sx = ox + 10 + sw*2;
+      const sy = oy - 22 + sh*3;
+      const bladeLen = 26;
+      // Blade
+      for(let i=0;i<bladeLen;i++){
+        const bx = sx - i*Math.sin(armAngle) - 1;
+        const by = sy + i*Math.cos(armAngle);
+        pc.px(bx, by, C.bb);
+        pc.px(bx+1, by, C.bh);
+        pc.px(bx-1, by, C.bm);
+      }
+      // Guard
+      pc.rect(sx-3, sy+1, 7, 2, C.gd);
+      // Grip
+      pc.rect(sx-2, sy+3, 3, 6, "#1f2937");
+      pc.px(sx-1, sy+8, C.gdL);
+      // Motion streak
+      if(frame===2||frame===3){
+        for(let i=0;i<7;i++){
+          pc.px(sx-2-i*2, sy+i, "rgba(248,250,252,0.75)");
+          pc.px(sx-1-i*2, sy+i+2, "rgba(248,250,252,0.45)");
+        }
+      }
+    } else if(isAct2){
+      // Hantaman perisai
+      pc.rect(ox+7, oy-10, 6, 10, C.bs);
+      pc.rect(ox+7, oy-10, 6, 2, C.bm);
+      // Perisai besar maju
+      const shX = ox + 13;
+      const shY = oy - 8;
+      pc.plate(shX, shY, 10, 16, C.bh, C.bm, C.bs);
+      pc.rect(shX+2, shY+2, 6, 6, C.pd);
+      pc.rect(shX+3, shY+3, 4, 4, C.gd);
+      pc.px(shX+4, shY+4, C.gdL);
+      // Pedang di belakang
+      pc.rect(ox-9, oy-12, 3, 12, C.bh);
+      pc.rect(ox-10, oy-13, 5, 2, C.gd);
+      // Impact lines
+      if(frame===2||frame===3){
+        for(let i=0;i<5;i++){
+          pc.px(shX+11+i*2, shY+7-i*2, "rgba(255,255,255,0.7)");
+          pc.px(shX+11+i*2, shY+9+i*2, "rgba(255,255,255,0.7)");
+        }
+      }
+    } else {
+      // Idle/walk/hurt — pedang di sisi, perisai di depan
+      // Lengan kanan
+      pc.rect(ox+7, oy-11, 6, 10, C.bs);
+      pc.rect(ox+7, oy-11, 6, 2, C.bm);
+      // Pedang vertikal
+      pc.rect(ox+9, oy-25, 3, 14, C.bb);
+      pc.rect(ox+9, oy-25, 1, 14, C.bh);
+      pc.rect(ox+9, oy-25, 3, 1, "#ffffff");
+      pc.rect(ox+6, oy-11, 9, 2, C.gd);
+      pc.rect(ox+9, oy-9, 3, 6, "#1f2937");
+      // Perisai
+      pc.plate(ox-16, oy-8, 8, 14, C.bh, C.bm, C.bs);
+      pc.rect(ox-14, oy-6, 4, 6, C.pd);
+      pc.rect(ox-13, oy-5, 2, 4, C.gd);
+      // Lengan kiri
+      pc.rect(ox-10, oy-10, 5, 8, C.bs);
+      pc.rect(ox-10, oy-10, 5, 2, C.bm);
+    }
+
+    // Texture metal
+    pc.speckle(ox-8, oy-7, 18, 14, "#7f1d1d", 0.05);
+    pc.outline("#160808");
+    pc.ellipse(ox, oy+21, 13, 2, "rgba(0,0,0,0.42)");
+    return pc.canvas;
+  },
+
+  /* =========================================================
+     PEMANAH — tudung hijau, busur besar, quiver
+     act1 = panah beracun | act2 = hujan panah (arrow dari atas)
+     ========================================================= */
+  buildRanger(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isWalk = state==="walk";
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      lk:"#bbf7d0", lm:"#4ade80", ls:"#22c55e", lL:"#15803d", lD:"#14532d", lX:"#052e16",
+      bd:"#292524", bs:"#78350f", bh:"#a16207",
+      sk:"#fed7aa", skS:"#c98a54", skD:"#78350f",
+      bs2:"#a16207", bowL:"#d97706",
+      eye:"#0f172a"
+    };
+
+    let bob=0;
+    if(state==="idle") bob=[0,1,2,1][frame]||0;
+    else if(isWalk) bob=[0,1,2,1,2,1][frame]||0;
+    else if(isAct1||isAct2) bob=[0,-1,-2,-1,0][frame]||0;
+    else if(isHurt) bob=2;
+
+    let lunge=0;
+    if(isAct1) lunge=[4,6,-6,-4,-1][frame];
+    else if(isAct2) lunge=[3,5,-8,-6,-2][frame];
+    else if(isHurt) lunge=(frame===0?5:3);
+
+    const ox = 24 + lunge;
+    const oy = 24 + bob;
+
+    // Kaki
+    let bLx=0,fLx=0;
+    if(isWalk){
+      const t=[[-4,0,3,0],[-2,0,1,0],[0,0,-1,0],[2,0,-3,0],[1,0,-2,0],[-1,0,2,0]][frame];
+      fLx=t[0];bLx=t[2];
+    } else if(isHurt) fLx=2;
+
+    pc.rect(ox-7+bLx, oy+5, 5, 12, C.bd);
+    pc.rect(ox-7+bLx, oy+5, 5, 2, "#3f2d16");
+    pc.rect(ox-8+bLx, oy+16, 7, 4, "#292524");
+    pc.rect(ox+2+fLx, oy+5, 5, 12, C.bs);
+    pc.rect(ox+2+fLx, oy+5, 5, 2, C.bh);
+    pc.rect(ox+1+fLx, oy+16, 7, 4, "#3f2d16");
+
+    // Quiver
+    pc.rect(ox-13, oy-9, 5, 12, C.bs);
+    pc.rect(ox-13, oy-9, 5, 2, C.bh);
+    pc.rect(ox-12, oy-13, 2, 4, "#e2e8f0");
+    pc.rect(ox-9, oy-13, 2, 4, "#f1f5f9");
+    pc.rect(ox-13, oy-3, 5, 1, C.bh);
+
+    // Jubah
+    pc.rect(ox-10, oy-4, 20, 12, C.lD);
+    pc.rect(ox-9, oy-3, 18, 10, C.lL);
+    pc.rect(ox-9, oy-3, 18, 1, C.ls);
+    // Sabuk
+    pc.rect(ox-10, oy+6, 20, 2, C.bd);
+    pc.rect(ox-4, oy+6, 3, 2, C.bh);
+
+    // Bahu
+    pc.plate(ox-13, oy-9, 6, 6, C.ls, C.lm, C.lD);
+    pc.plate(ox+7, oy-9, 6, 6, C.ls, C.lm, C.lD);
+
+    // Kepala & tudung
+    pc.rect(ox-7, oy-21, 14, 11, C.lD);
+    pc.rect(ox-6, oy-20, 12, 9, C.lL);
+    // Wajah
+    pc.rect(ox-5, oy-18, 10, 7, C.sk);
+    pc.rect(ox-5, oy-18, 10, 2, C.skS);
+    pc.px(ox-3, oy-15, C.eye); pc.px(ox+3, oy-15, C.eye);
+    // Tudung menutupi kening
+    pc.rect(ox-7, oy-21, 14, 4, C.lD);
+    pc.rect(ox-7, oy-21, 14, 1, C.ls);
+    pc.rect(ox-6, oy-24, 12, 4, C.lm);
+    pc.rect(ox-5, oy-24, 10, 1, C.ls);
+    // Ekor tudung
+    pc.rect(ox+6, oy-20, 6, 3, C.lD);
+    pc.rect(ox+9, oy-18, 4, 3, C.lD);
+    pc.px(ox+13, oy-17, C.ls);
+
+    // ====== Senjata ======
+    if(isAct1){
+      // Panah beracun: busur ditarik penuh
+      // Tangan depan menahan busur
+      pc.rect(ox-16, oy-12, 5, 8, C.lm);
+      pc.rect(ox-16, oy-12, 5, 2, C.ls);
+      // Tangan belakang menarik
+      pc.rect(ox+6, oy-10, 5, 8, C.lm);
+      // Busur besar
+      const bx = ox-18, by = oy-16;
+      // Arc busur
+      for(let i=0;i<22;i++){
+        const t = i/21;
+        const ang = -1.1 + t*2.2;
+        pc.px(bx + 4 + Math.cos(ang)*2, by + t*22, C.bs);
+        pc.px(bx + 3 + Math.cos(ang)*2, by + t*22, C.bh);
+      }
+      // String
+      pc.line(bx+6, by, ox+4, oy-5, "#e2e8f0");
+      pc.line(bx+6, by+21, ox+4, oy-5, "#e2e8f0");
+      // Anak panah siap
+      pc.line(ox+5, oy-5, bx+3, oy-5, C.bs);
+      pc.rect(bx+2, oy-6, 3, 3, "#4ade80");
+      // Racun menetes
+      if(frame>=2){
+        pc.px(bx+2, oy-2, "#4ade80");
+        pc.px(bx+1, oy+1, "#22c55e");
+      }
+    } else if(isAct2){
+      // Hujan panah — busur ke atas
+      pc.rect(ox-14, oy-14, 5, 8, C.lm);
+      pc.rect(ox+4, oy-12, 5, 8, C.lm);
+      // Busur menghadap ke atas
+      const bx = ox-16, by = oy-26;
+      for(let i=0;i<18;i++){
+        const t = i/17;
+        const ang = -1.0 + t*2.0;
+        pc.px(bx + 6 + Math.cos(ang)*2, by + t*22, C.bs);
+        pc.px(bx + 5 + Math.cos(ang)*2, by + t*22, C.bh);
+      }
+      pc.line(bx+8, by, ox-4, oy-12, "#e2e8f0");
+      pc.line(bx+8, by+22, ox-4, oy-12, "#e2e8f0");
+      // Beberapa panah siap di tas
+      if(frame>=2){
+        pc.px(ox-2, oy-32, "#facc15");
+        pc.px(ox+3, oy-32, "#facc15");
+        pc.px(ox-2, oy-33, "#fde047");
+        pc.px(ox+3, oy-33, "#fde047");
+      }
+    } else {
+      // Idle: busur di punggung
+      pc.rect(ox+6, oy-11, 5, 8, C.lm);
+      pc.rect(ox+6, oy-11, 5, 2, C.ls);
+      pc.rect(ox-8, oy-11, 5, 8, C.lm);
+      // Busur
+      const bx = ox-14, by = oy-12;
+      for(let i=0;i<18;i++){
+        const t = i/17;
+        const ang = -1.0 + t*2.0;
+        pc.px(bx + Math.cos(ang)*2, by + t*20, C.bs);
+        pc.px(bx + 1 + Math.cos(ang)*2, by + t*20, C.bh);
+      }
+      pc.line(bx+2, by, ox-6, oy-2, "#cbd5e1");
+      pc.line(bx+2, by+20, ox-6, oy-2, "#cbd5e1");
+    }
+
+    pc.outline("#08130b");
+    pc.ellipse(ox, oy+21, 12, 2, "rgba(0,0,0,0.42)");
+    return pc.canvas;
+  },
+
+  /* =========================================================
+     PENYIHIR — jubah ungu, topi lebar, tongkat ber-orb
+     act1 = bola api (AoE) | act2 = petir terarah
+     ========================================================= */
+  buildMage(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isWalk = state==="walk";
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      rl:"#a78bfa", rm:"#7c3aed", rs:"#5b21b6", rD:"#4c1d95", rX:"#2e1065",
+      hat:"#3b0764", hatL:"#6d28d9", hatB:"#a78bfa",
+      beard:"#f8fafc", beardS:"#cbd5e1",
+      sk:"#fde68a", skS:"#d97706",
+      wood:"#78350f", woodL:"#a16207", woodD:"#451a03",
+      orb:"#22d3ee", orbL:"#a5f3fc", orbD:"#0891b2",
+      star:"#fde047", starL:"#fef9c3",
+      eye:"#0f172a"
+    };
+
+    let bob=0;
+    if(state==="idle") bob=[0,1,2,3,2,1][frame%4]||[0,1,2,1][frame]||0;
+    if(state==="idle") bob=[0,1,2,1][frame];
+    else if(isWalk) bob=[0,1,2,1,2,1][frame];
+    else if(isAct1||isAct2) bob=[0,-2,-3,-1,0][frame];
+    else if(isHurt) bob=2;
+
+    let lunge=0;
+    if(isAct1) lunge=[2,4,-8,-6,-2][frame];
+    else if(isAct2) lunge=[3,5,-12,-8,-3][frame];
+    else if(isHurt) lunge=(frame===0?6:3);
+
+    const ox = 24 + lunge;
+    const oy = 24 + bob;
+
+    // ====== Jubah ======
+    pc.rect(ox-14, oy-6, 28, 24, C.rX);
+    pc.rect(ox-13, oy-5, 26, 22, C.rD);
+    pc.rect(ox-12, oy-4, 24, 20, C.rs);
+    pc.rect(ox-11, oy-3, 10, 18, C.rm);
+    // Highlight sisi
+    pc.rect(ox-11, oy-3, 3, 18, C.rl);
+    // Bintang pattern
+    pc.px(ox-4, oy+2, C.star);
+    pc.px(ox+6, oy+6, C.star);
+    pc.px(ox-8, oy+10, C.starL);
+    pc.px(ox+2, oy+14, C.star);
+    pc.px(ox+10, oy+3, C.starL);
+    // Ujung jubah
+    pc.rect(ox-14, oy+16, 28, 3, C.hat);
+    pc.rect(ox-14, oy+16, 28, 1, C.rm);
+
+    // Bahu
+    pc.plate(ox-15, oy-8, 7, 7, C.rl, C.rm, C.rs);
+    pc.plate(ox+8, oy-8, 7, 7, C.rl, C.rm, C.rs);
+
+    // Kepala
+    pc.rect(ox-7, oy-20, 14, 8, C.sk);
+    pc.rect(ox-7, oy-20, 14, 2, C.skS);
+    pc.px(ox-3, oy-16, C.eye); pc.px(ox+3, oy-16, C.eye);
+    pc.px(ox-3, oy-17, "#7dd3fc"); pc.px(ox+3, oy-17, "#7dd3fc");
+
+    // Jenggot panjang
+    pc.rect(ox-7, oy-13, 14, 12, C.beard);
+    pc.rect(ox-6, oy-12, 12, 10, "#ffffff");
+    pc.rect(ox-5, oy-10, 10, 8, C.beard);
+    pc.rect(ox-4, oy-8, 8, 5, C.beardS);
+    for(let i=0;i<6;i++) pc.px(ox-3+i, oy-3, C.beardS);
+
+    // ====== Topi lebar ======
+    pc.rect(ox-18, oy-21, 36, 4, C.hat);
+    pc.rect(ox-18, oy-21, 36, 1, C.hatL);
+    pc.rect(ox-18, oy-18, 36, 1, C.rX);
+    // Kerucut
+    pc.rect(ox-9, oy-25, 18, 4, C.hat);
+    pc.rect(ox-7, oy-28, 14, 3, C.hat);
+    pc.rect(ox-4, oy-30, 8, 2, C.hatL);
+    // Buckle
+    pc.rect(ox-3, oy-21, 6, 3, C.wood);
+    pc.rect(ox-2, oy-21, 4, 1, C.star);
+    pc.px(ox, oy-20, C.starL);
+
+    // ====== Tongkat ======
+    const stX = isAct1 ? ox-20 : isAct2 ? ox-19 : ox-19;
+    const stY = isAct1 ? oy-20 : isAct2 ? oy-30 : oy-14;
+    // Batang
+    pc.rect(stX+2, stY+7, 3, 28, C.wood);
+    pc.rect(stX+2, stY+7, 1, 28, C.woodL);
+    pc.rect(stX+4, stY+7, 1, 28, C.woodD);
+    // Orb
+    pc.ellipse(stX+3, stY+3, 4, 4, C.orbD);
+    pc.ellipse(stX+3, stY+3, 3, 3, C.orb);
+    pc.rect(stX+2, stY+1, 3, 3, C.orbL);
+    pc.px(stX+2, stY+1, "#ffffff");
+    // Orb glow
+    if(isAct1||isAct2){
+      for(let i=0;i<8;i++){
+        const ang=(i/8)*Math.PI*2 + frame*0.5;
+        pc.px(stX+3+Math.cos(ang)*7, stY+3+Math.sin(ang)*7, "rgba(165,243,252,0.85)");
+      }
+    }
+
+    // Efek saat menyerang
+    if(isAct2 && frame>=2){
+      // Petir kecil di atas orb
+      pc.line(stX+3, stY-3, stX+2, stY-6, "#67e8f9");
+      pc.line(stX+2, stY-6, stX+4, stY-9, "#a5f3fc");
+    }
+
+    // Tangan (tersembunyi di balik jubah tapi terlihat ujung)
+    pc.rect(ox+8, oy-10, 4, 6, C.sk);
+    pc.rect(ox+8, oy-10, 4, 1, C.skS);
+
+    pc.outline("#0a0a1e");
+    pc.ellipse(ox, oy+21, 15, 2, "rgba(0,0,0,0.42)");
+    return pc.canvas;
+  },
+
+  /* =========================================================
+     TABIB — jubah putih-emas, halo, gada suci
+     act1 = gada + heal rekan | act2 = doa AoE heal
+     ========================================================= */
+  buildCleric(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isWalk = state==="walk";
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      wl:"#ffffff", wm:"#f1f5f9", ws:"#cbd5e1", wd:"#94a3b8",
+      gd:"#eab308", gdL:"#fde047", gdS:"#a16207",
+      bd:"#1e40af", bm:"#3b82f6", bl:"#60a5fa", bh:"#93c5fd",
+      sk:"#fde68a", skS:"#d97706",
+      mk:"#334155", mm:"#64748b", ml:"#94a3b8", mh:"#cbd5e1",
+      eye:"#0f172a",
+      halo:"#fef08a", haloL:"#fef9c3"
+    };
+
+    let bob=0;
+    if(state==="idle") bob=[0,1,2,1][frame];
+    else if(isWalk) bob=[0,1,2,1,2,1][frame];
+    else if(isAct1||isAct2) bob=[0,-2,-2,-1,0][frame];
+    else if(isHurt) bob=2;
+
+    let lunge=0;
+    if(isAct1) lunge=[3,5,-10,-6,-2][frame];
+    else if(isAct2) lunge=[2,2,0,-1,-1][frame];
+    else if(isHurt) lunge=(frame===0?5:3);
+
+    const ox = 24 + lunge;
+    const oy = 24 + bob;
+
+    // Kaki (di bawah jubah)
+    let fLx=0,bLx=0;
+    if(isWalk){
+      const t=[[-3,0,2,0],[0,0,0,0],[2,0,-3,0],[0,0,0,0],[-2,0,1,0],[1,0,-2,0]][frame];
+      fLx=t[0];bLx=t[2];
+    }
+    pc.rect(ox-6+bLx, oy+18, 6, 3, C.wd);
+    pc.rect(ox+2+fLx, oy+18, 6, 3, C.ws);
+
+    // Jubah bawah lebar
+    pc.rect(ox-15, oy-6, 30, 26, C.wd);
+    pc.rect(ox-14, oy-5, 28, 24, C.ws);
+    pc.rect(ox-13, oy-4, 26, 22, C.wm);
+    pc.rect(ox-12, oy-3, 24, 20, C.wl);
+    // Panel samping
+    pc.rect(ox-12, oy-3, 4, 20, C.ws);
+    pc.rect(ox+8, oy-3, 4, 20, C.ws);
+    // Trim emas vertikal
+    pc.rect(ox-2, oy-4, 3, 22, C.gd);
+    pc.rect(ox-2, oy-4, 1, 22, C.gdL);
+    // Trim horizontal bawah
+    pc.rect(ox-14, oy+14, 28, 3, C.gd);
+    pc.rect(ox-14, oy+14, 28, 1, C.gdL);
+    // Detail salib
+    pc.px(ox, oy+2, C.gdS);
+    pc.rect(ox-1, oy+2, 3, 1, C.gdS);
+
+    // Bahu biru
+    pc.plate(ox-16, oy-9, 7, 8, C.bh, C.bm, C.bd);
+    pc.plate(ox+9, oy-9, 7, 8, C.bh, C.bm, C.bd);
+    pc.rect(ox-14, oy-6, 2, 3, C.gd);
+
+    // Kepala
+    pc.rect(ox-7, oy-20, 14, 8, C.sk);
+    pc.rect(ox-7, oy-20, 14, 2, C.skS);
+    pc.px(ox-3, oy-17, C.eye); pc.px(ox+3, oy-17, C.eye);
+    pc.px(ox-3, oy-18, "#93c5fd"); pc.px(ox+3, oy-18, "#93c5fd");
+
+    // Tudung biru
+    pc.rect(ox-9, oy-24, 18, 8, C.bd);
+    pc.rect(ox-8, oy-23, 16, 6, C.bm);
+    pc.rect(ox-8, oy-23, 16, 1, C.bh);
+    // Sisi tudung turun
+    pc.rect(ox-9, oy-18, 3, 8, C.bd);
+    pc.rect(ox+6, oy-18, 3, 8, C.bd);
+
+    // HALO bercahaya
+    const haloPulse = Math.sin(frame*1.5)*1;
+    pc.ellipse(ox, oy-28+haloPulse, 10, 2, C.halo);
+    pc.ellipse(ox, oy-28+haloPulse, 8, 1, C.haloL);
+    // Sinar
+    for(let i=0;i<8;i++){
+      const ang = i*Math.PI/4;
+      pc.px(ox+Math.cos(ang)*12, oy-28+haloPulse+Math.sin(ang)*3, C.haloL);
+    }
+
+    // ====== Gada ======
+    if(isAct1){
+      // Gada menghantam ke bawah
+      pc.rect(ox+6, oy-14, 5, 10, C.mm);
+      // Batang gada
+      pc.rect(ox+13, oy-14, 2, 26, C.mk);
+      pc.rect(ox+13, oy-14, 1, 26, C.mm);
+      // Kepala gada
+      pc.rect(ox+9, oy-24, 10, 10, C.mm);
+      pc.rect(ox+10, oy-23, 8, 8, C.ml);
+      pc.rect(ox+11, oy-22, 6, 6, C.mh);
+      pc.rect(ox+12, oy-20, 4, 2, C.gd);
+      pc.px(ox+13, oy-20, C.gdL);
+      // Impact
+      if(frame>=2){
+        pc.px(ox+9, oy-26, "rgba(253,224,71,0.9)");
+        pc.px(ox+20, oy-26, "rgba(253,224,71,0.9)");
+        pc.px(ox+14, oy-28, "rgba(253,224,71,0.9)");
+      }
+    } else if(isAct2){
+      // Doa: gada terangkat tinggi + cahaya
+      pc.rect(ox+6, oy-16, 5, 10, C.mm);
+      pc.rect(ox+12, oy-26, 2, 28, C.mk);
+      pc.rect(ox+12, oy-26, 1, 28, C.mm);
+      pc.rect(ox+8, oy-36, 10, 10, C.mm);
+      pc.rect(ox+9, oy-35, 8, 8, C.ml);
+      pc.rect(ox+10, oy-34, 6, 6, C.mh);
+      pc.rect(ox+11, oy-32, 4, 2, C.gd);
+      // Sinar doa
+      for(let i=0;i<6;i++){
+        const ang = i*Math.PI/3 + frame*0.3;
+        pc.px(ox+13+Math.cos(ang)*8, oy-31+Math.sin(ang)*8, "rgba(253,224,71,0.75)");
+      }
+    } else {
+      pc.rect(ox+6, oy-11, 5, 8, C.mm);
+      pc.rect(ox+6, oy-11, 5, 2, C.ml);
+      pc.rect(ox+11, oy-14, 2, 24, C.mk);
+      pc.rect(ox+11, oy-14, 1, 24, C.mm);
+      pc.rect(ox+7, oy-22, 10, 10, C.mm);
+      pc.rect(ox+8, oy-21, 8, 8, C.ml);
+      pc.rect(ox+9, oy-20, 6, 6, C.mh);
+      pc.rect(ox+10, oy-18, 4, 2, C.gd);
+      pc.px(ox+11, oy-18, C.gdL);
+    }
+
+    // Tangan kiri bebas (untuk doa)
+    pc.rect(ox-10, oy-8, 5, 8, C.sk);
+    pc.rect(ox-10, oy-8, 5, 1, C.skS);
+
+    pc.outline("#0a0d18");
+    pc.ellipse(ox, oy+21, 15, 2, "rgba(0,0,0,0.42)");
+    return pc.canvas;
+  },
+
+  /* =========================================================
+     SLIME ASAM — blob kenyal dengan core, mata besar
+     act1 = serangan asam | act2 = sembur racun (naik & spit)
+     ========================================================= */
+  buildSlime(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      hi:"#bbf7d0", lt:"#4ade80", md:"#22c55e", dk:"#15803d", xd:"#052e16",
+      core:"#166534", eye:"#0b1220", eyeW:"#ffffff", mouth:"#052e16",
+      acid:"#a3e635", acidL:"#d9f99d"
+    };
+
+    // Squash/stretch
+    let squash = 0;
+    if(state==="idle") squash = [0,-1,1,0][frame]||0;
+    else if(isAct1){
+      // Windup: mengembang lalu luncur ke depan
+      squash = [-3,-5,4,3,1][frame];
+    } else if(isAct2){
+      // Mengangkat badan & naik
+      squash = [-2,-4,-6,-4,-1][frame];
+    } else if(isHurt){
+      squash = [3,2][frame];
+    }
+
+    let lunge=0;
+    if(isAct1) lunge=[-2,-3,6,4,1][frame];
+    else if(isAct2) lunge=[0,0,-2,-1,0][frame];
+    else if(isHurt) lunge=(frame===0?4:2);
+
+    const cx = 24 + lunge;
+    const cy = 30;  // pusat tanah
+    const topY = cy - 17 - squash*0.9;
+    const botY = cy + 8;
+
+    // Bentuk blob via scanline
+    for(let y=Math.floor(topY); y<botY; y++){
+      const t = Math.min(1, Math.max(0, (y-topY)/(botY-topY)));
+      let halfW = 6 + Math.sin(t*Math.PI)*11 + squash*0.6;
+      if(y >= botY-3) halfW = Math.max(halfW-3, 5);
+      const x0 = Math.round(cx-halfW);
+      const w = Math.round(halfW*2);
+
+      pc.rect(x0, y, w, 1, C.dk);
+      if(y < botY-2) pc.rect(x0+1, y, w-2, 1, C.md);
+      if(y < topY + 7) pc.rect(x0+2, y, w-4, 1, C.lt);
+      if(y < topY + 3) pc.rect(x0+3, y, w-6, 1, C.hi);
+    }
+
+    // Core (inti dalam)
+    pc.ellipse(cx, topY + 14, 5, 4, C.core);
+    pc.ellipse(cx-1, topY + 13, 3, 2, "#22c55e");
+
+    // Kilau basah
+    pc.rect(cx-6, Math.floor(topY+5), 4, 2, "#ffffff");
+    pc.rect(cx-5, Math.floor(topY+7), 2, 1, "#ffffff");
+    pc.px(cx+7, Math.floor(topY+9), "#ffffff");
+
+    // Mata — lebih besar & ekspresif
+    const eyeY = Math.floor(topY + 9);
+    pc.rect(cx-6, eyeY, 4, 5, C.eye);
+    pc.rect(cx+2, eyeY, 4, 5, C.eye);
+    pc.rect(cx-5, eyeY+1, 2, 2, C.eyeW);
+    pc.rect(cx+3, eyeY+1, 2, 2, C.eyeW);
+
+    // Mulut / ekspresi
+    if(isAct1){
+      // Mulut terbuka besar
+      pc.rect(cx-4, eyeY+8, 8, 5, C.mouth);
+      pc.rect(cx-3, eyeY+9, 6, 3, C.dk);
+    } else if(isAct2){
+      // Mulut O menyembur
+      pc.ellipse(cx, eyeY+10, 4, 4, C.mouth);
+      pc.ellipse(cx, eyeY+10, 2, 2, C.xd);
+      // Tetesan asam
+      if(frame>=2){
+        pc.px(cx+6, eyeY+6, C.acid);
+        pc.px(cx+7, eyeY+4, C.acid);
+        pc.px(cx+9, eyeY+2, C.acidL);
+        pc.px(cx-6, eyeY+5, C.acid);
+      }
+    } else if(isHurt){
+      pc.rect(cx-4, eyeY+9, 8, 2, C.mouth);
+    } else {
+      pc.rect(cx-3, eyeY+9, 6, 1, C.mouth);
+    }
+
+    pc.outline("#06210f");
+    pc.ellipse(cx, cy+9, 16, 3, "rgba(0,0,0,0.45)");
+    return pc.canvas;
+  },
+
+  /* =========================================================
+     ORC BRUTE — hijau berotot, gading, kapak besar
+     act1 = tebasan kapak | act2 = gempa (STUN_ATTACK)
+     ========================================================= */
+  buildOrc(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      hi:"#86efac", lt:"#4ade80", md:"#22c55e", dk:"#15803d", xd:"#14532d",
+      ld:"#78350f", lm:"#a16207", ll:"#d97706",
+      mk:"#1e293b", mm:"#475569", ml:"#94a3b8", mh:"#cbd5e1",
+      cl:"#7f1d1d", clL:"#b91c1c",
+      tusk:"#f8fafc", tuskS:"#cbd5e1",
+      eye:"#ef4444", eyeL:"#fca5a5"
+    };
+
+    let bob=0;
+    if(state==="idle") bob=[0,1,2,1][frame];
+    else if(isAct1) bob=[-1,-2,0,0,-1][frame];
+    else if(isAct2) bob=[-2,-4,-2,0,0][frame];
+    else if(isHurt) bob=2;
+
+    let lunge=0;
+    if(isAct1) lunge=[3,4,-12,-8,-2][frame];
+    else if(isAct2) lunge=[-1,-2,8,4,0][frame];
+    else if(isHurt) lunge=(frame===0?5:3);
+
+    const ox = 24 + lunge;
+    const oy = 24 + bob;
+
+    // Kaki besar
+    pc.rect(ox-11, oy+10, 8, 13, C.md);
+    pc.rect(ox-11, oy+10, 8, 2, C.lt);
+    pc.rect(ox+3, oy+10, 8, 13, C.md);
+    pc.rect(ox+3, oy+10, 8, 2, C.lt);
+    // Telapak
+    pc.rect(ox-12, oy+20, 10, 4, "#3f2d16");
+    pc.rect(ox+2, oy+20, 10, 4, "#292524");
+    pc.rect(ox-12, oy+20, 10, 1, "#78350f");
+    pc.rect(ox+2, oy+20, 10, 1, "#78350f");
+
+    // Cawat
+    pc.rect(ox-11, oy+4, 22, 8, C.cl);
+    pc.rect(ox-10, oy+5, 20, 6, C.clL);
+    pc.rect(ox-10, oy+5, 20, 1, "#dc2626");
+    // Kancing
+    pc.px(ox, oy+8, "#facc15");
+    pc.px(ox+1, oy+8, "#fde047");
+
+    // Torso berotot
+    pc.plate(ox-13, oy-9, 26, 15, C.lt, C.md, C.dk);
+    // Otot perut
+    pc.rect(ox-2, oy-6, 1, 12, C.xd);
+    pc.rect(ox-8, oy-2, 16, 1, C.xd);
+    pc.rect(ox-8, oy+3, 16, 1, C.xd);
+    // Dada
+    pc.rect(ox-9, oy-8, 7, 4, C.hi);
+    pc.rect(ox+2, oy-8, 7, 4, C.hi);
+
+    // Bahu berotot besar
+    pc.plate(ox-17, oy-10, 8, 9, C.lt, C.md, C.xd);
+    pc.plate(ox+9, oy-10, 8, 9, C.lt, C.md, C.xd);
+
+    // Kepala
+    pc.rect(ox-9, oy-24, 18, 12, C.md);
+    pc.rect(ox-9, oy-24, 18, 2, C.lt);
+    pc.rect(ox-8, oy-22, 16, 8, C.lt);
+    // Rahang menonjol
+    pc.rect(ox-8, oy-14, 16, 3, C.dk);
+    // Mata merah
+    pc.rect(ox-6, oy-18, 4, 3, C.eye);
+    pc.rect(ox+2, oy-18, 4, 3, C.eye);
+    pc.px(ox-5, oy-17, "#fde047");
+    pc.px(ox+3, oy-17, "#fde047");
+    pc.px(ox-6, oy-18, C.eyeL);
+    pc.px(ox+2, oy-18, C.eyeL);
+    // Alis tebal
+    pc.rect(ox-6, oy-21, 4, 1, C.xd);
+    pc.rect(ox+2, oy-21, 4, 1, C.xd);
+    // Telinga
+    pc.rect(ox-12, oy-21, 3, 4, C.md);
+    pc.rect(ox+9, oy-21, 3, 4, C.md);
+    // Gading
+    pc.rect(ox-7, oy-12, 3, 4, C.tusk);
+    pc.rect(ox+4, oy-12, 3, 4, C.tusk);
+    pc.px(ox-6, oy-9, C.tuskS);
+    pc.px(ox+5, oy-9, C.tuskS);
+
+    // ====== Kapak ======
+    if(isAct1){
+      // Kapak diayun ke depan
+      const axeX = ox + 12;
+      const axeY = oy - 22;
+      // Batang
+      pc.rect(axeX+2, axeY+6, 3, 30, C.ld);
+      pc.rect(axeX+2, axeY+6, 1, 30, C.lm);
+      // Mata kapak besar
+      pc.rect(axeX-4, axeY, 12, 12, C.mm);
+      pc.rect(axeX-3, axeY+1, 10, 10, C.ml);
+      pc.rect(axeX-2, axeY+2, 8, 8, C.mh);
+      pc.px(axeX, axeY+5, "#ffffff");
+      // Retakan di mata kapak
+      pc.line(axeX+2, axeY+3, axeX+6, axeY+8, C.mk);
+      pc.line(axeX+6, axeY+3, axeX+2, axeY+8, C.mk);
+      // Motion streak
+      if(frame>=2){
+        for(let i=0;i<8;i++){
+          pc.px(axeX-5-i, axeY+5+i*1.5, "rgba(255,255,255,0.6)");
+          pc.px(axeX-4-i, axeY+7+i*1.5, "rgba(255,255,255,0.4)");
+        }
+      }
+    } else if(isAct2){
+      // Gempa: kapak diangkat tinggi
+      const axeX = ox + 8;
+      const axeY = oy - 38;
+      pc.rect(axeX+2, axeY+6, 3, 34, C.ld);
+      pc.rect(axeX+2, axeY+6, 1, 34, C.lm);
+      pc.rect(axeX-5, axeY, 14, 14, C.mm);
+      pc.rect(axeX-4, axeY+1, 12, 12, C.ml);
+      pc.rect(axeX-3, axeY+2, 10, 10, C.mh);
+      pc.px(axeX, axeY+6, "#ffffff");
+      // Garis gempa di tanah
+      if(frame>=2){
+        for(let i=0;i<5;i++){
+          pc.px(ox-20+i*10, oy+22, "rgba(148,163,184,0.65)");
+          pc.px(ox-18+i*10, oy+23, "rgba(148,163,184,0.4)");
+        }
+      }
+    } else {
+      // Idle: kapak di sisi
+      const axeX = ox + 12;
+      const axeY = oy - 10;
+      pc.rect(axeX, axeY, 3, 32, C.ld);
+      pc.rect(axeX, axeY, 1, 32, C.lm);
+      pc.rect(axeX-4, axeY+4, 10, 10, C.mm);
+      pc.rect(axeX-3, axeY+5, 8, 8, C.ml);
+      pc.rect(axeX-2, axeY+6, 6, 6, C.mh);
+      pc.px(axeX, axeY+8, "#ffffff");
+    }
+
+    pc.outline("#0a1a0d");
+    pc.ellipse(ox, oy+22, 15, 2, "rgba(0,0,0,0.5)");
+    return pc.canvas;
+  },
+
+  /* =========================================================
+     DRAKONIT — reptil ungu berjubah, tanduk, tongkat sihir
+     act1 = AoE sihir (orb diangkat) | act2 = DOOM (kutuk)
+     ========================================================= */
+  buildDrakonit(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      rh:"#c4b5fd", rl:"#a78bfa", rm:"#7c3aed", rs:"#5b21b6", rD:"#4c1d95", rX:"#2e1065",
+      sc:"#6d28d9", scL:"#8b5cf6", scD:"#3b0764",
+      eye:"#4ade80", eyeL:"#bbf7d0",
+      horn:"#f8fafc", hornS:"#cbd5e1",
+      staff:"#1e1b4b", staffL:"#3730a3",
+      orb:"#c084fc", orbL:"#e9d5ff", orbD:"#7c3aed",
+      magic:"#f0abfc"
+    };
+
+    let bob=0;
+    if(state==="idle") bob=[0,1,2,1][frame];
+    else if(isAct1) bob=[-1,-2,-2,-1,0][frame];
+    else if(isAct2) bob=[-2,-4,-3,-1,0][frame];
+    else if(isHurt) bob=2;
+
+    let lunge=0;
+    if(isAct1) lunge=[2,4,-6,-4,-1][frame];
+    else if(isAct2) lunge=[2,3,-4,-2,0][frame];
+    else if(isHurt) lunge=(frame===0?5:3);
+
+    const ox = 24 + lunge;
+    const oy = 24 + bob;
+
+    // Jubah bawah
+    pc.rect(ox-14, oy-2, 28, 22, C.rX);
+    pc.rect(ox-13, oy-1, 26, 20, C.rD);
+    pc.rect(ox-12, oy+0, 24, 18, C.rs);
+    pc.rect(ox-11, oy+1, 10, 16, C.rm);
+    pc.rect(ox-11, oy+1, 3, 16, C.rl);
+    // Ujung bawah
+    pc.rect(ox-14, oy+18, 28, 3, C.sc);
+    pc.rect(ox-14, oy+18, 28, 1, C.rl);
+    // Rune pattern
+    pc.px(ox-3, oy+3, C.magic);
+    pc.px(ox+5, oy+8, C.orbL);
+    pc.px(ox-7, oy+12, C.magic);
+
+    // Bahu
+    pc.plate(ox-15, oy-8, 7, 7, C.rh, C.rl, C.rm);
+    pc.plate(ox+8, oy-8, 7, 7, C.rh, C.rl, C.rm);
+
+    // Torso
+    pc.plate(ox-10, oy-8, 20, 12, C.rh, C.rl, C.rm);
+
+    // Leher reptil
+    pc.rect(ox-5, oy-14, 10, 6, C.sc);
+    pc.rect(ox-5, oy-14, 10, 1, C.scL);
+
+    // Kepala reptil
+    pc.rect(ox-8, oy-22, 16, 10, C.sc);
+    pc.rect(ox-8, oy-22, 16, 2, C.scL);
+    pc.rect(ox-7, oy-20, 14, 6, C.scL);
+    // Moncong
+    pc.rect(ox+5, oy-18, 7, 5, C.sc);
+    pc.rect(ox+6, oy-17, 5, 3, C.scL);
+    // Rahang bawah
+    pc.rect(ox-6, oy-12, 14, 2, C.scD);
+    // Lubang hidung
+    pc.px(ox+10, oy-16, C.scD);
+    // Gigi
+    pc.px(ox+8, oy-13, "#ffffff");
+    pc.px(ox+10, oy-13, "#ffffff");
+    // Mata bercahaya
+    pc.rect(ox-4, oy-20, 4, 4, C.eye);
+    pc.rect(ox+3, oy-20, 4, 4, C.eye);
+    pc.rect(ox-3, oy-19, 2, 2, "#0b1220");
+    pc.rect(ox+4, oy-19, 2, 2, "#0b1220");
+    pc.px(ox-4, oy-20, C.eyeL);
+    pc.px(ox+3, oy-20, C.eyeL);
+    // Tanduk putih
+    pc.rect(ox-8, oy-26, 2, 5, C.horn);
+    pc.rect(ox+6, oy-26, 2, 5, C.horn);
+    pc.px(ox-7, oy-27, C.hornS);
+    pc.px(ox+7, oy-27, C.hornS);
+
+    // ====== Tongkat ======
+    const stX = (isAct1||isAct2) ? ox-19 : ox-17;
+    const stY = isAct2 ? oy-34 : isAct1 ? oy-24 : oy-16;
+    // Batang panjang
+    pc.rect(stX+2, stY+6, 3, 32, C.staff);
+    pc.rect(stX+2, stY+6, 1, 32, C.staffL);
+    // Orb besar
+    pc.ellipse(stX+3, stY+3, 5, 5, C.orbD);
+    pc.ellipse(stX+3, stY+3, 4, 4, C.orb);
+    pc.rect(stX+1, stY+1, 3, 3, C.orbL);
+    pc.px(stX+1, stY+1, "#ffffff");
+    // Rune di orb saat menyerang
+    if(isAct1||isAct2){
+      for(let i=0;i<6;i++){
+        const ang = (i/6)*Math.PI*2 + frame*0.4;
+        pc.px(stX+3+Math.cos(ang)*7, stY+3+Math.sin(ang)*7, C.magic);
+      }
+    }
+
+    pc.outline("#0a0416");
+    pc.ellipse(ox, oy+21, 15, 2, "rgba(76,29,149,0.45)");
+    return pc.canvas;
+  },
+
+  /* =========================================================
+     GOLEM BATU — raksasa batu, mata cyan menyala
+     act1 = hantam kepalan | act2 = gempa STUN (kedua kepalan)
+     ========================================================= */
+  buildGolem(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      hi:"#94a3b8", lt:"#64748b", md:"#475569", dk:"#334155", xd:"#1e293b",
+      core:"#06b6d4", coreL:"#67e8f9", coreW:"#ffffff",
+      moss:"#166534", mossL:"#22c55e",
+      crack:"#0f172a"
+    };
+
+    let bob=0;
+    if(state==="idle") bob=[0,1,2,1][frame];
+    else if(isAct1) bob=[-1,-2,2,0,0][frame];
+    else if(isAct2) bob=[-2,-4,-2,1,0][frame];
+    else if(isHurt) bob=1;
+
+    let lunge=0;
+    if(isAct1) lunge=[3,5,-12,-8,-2][frame];
+    else if(isAct2) lunge=[-1,-2,6,3,0][frame];
+    else if(isHurt) lunge=(frame===0?4:2);
+
+    const ox = 24 + lunge;
+    const oy = 24 + bob;
+
+    // Kaki tebal
+    pc.rect(ox-13, oy+12, 10, 12, C.md);
+    pc.rect(ox-13, oy+12, 10, 2, C.lt);
+    pc.rect(ox+3, oy+12, 10, 12, C.md);
+    pc.rect(ox+3, oy+12, 10, 2, C.lt);
+    pc.rect(ox-14, oy+22, 12, 4, C.dk);
+    pc.rect(ox+2, oy+22, 12, 4, C.dk);
+
+    // Badan besar
+    pc.plate(ox-14, oy-8, 28, 22, C.hi, C.lt, C.md);
+    // Blok batu terlihat
+    pc.rect(ox-12, oy-6, 10, 8, C.lt);
+    pc.rect(ox-1, oy-6, 10, 8, C.lt);
+    pc.rect(ox-12, oy+4, 8, 8, C.md);
+    pc.rect(ox+4, oy+4, 8, 8, C.md);
+    // Retakan
+    pc.line(ox-6, oy-8, ox-3, oy-2, C.crack);
+    pc.line(ox-3, oy-2, ox+2, oy+4, C.crack);
+    pc.line(ox+2, oy+4, ox+5, oy+12, C.crack);
+    pc.line(ox+8, oy-6, ox+10, oy, C.crack);
+    // Lumut
+    pc.rect(ox-14, oy+10, 5, 3, C.moss);
+    pc.rect(ox+11, oy-4, 3, 4, C.moss);
+    pc.px(ox-13, oy+9, C.mossL);
+
+    // Bahu besar
+    pc.plate(ox-20, oy-10, 8, 9, C.hi, C.lt, C.md);
+    pc.plate(ox+12, oy-10, 8, 9, C.hi, C.lt, C.md);
+
+    // Kepala (kubus batu)
+    pc.plate(ox-11, oy-24, 22, 14, C.hi, C.lt, C.md);
+    // Retak atas
+    pc.rect(ox-11, oy-24, 22, 2, C.dk);
+    // Mata menyala
+    pc.rect(ox-6, oy-19, 5, 4, C.core);
+    pc.rect(ox+2, oy-19, 5, 4, C.core);
+    pc.rect(ox-5, oy-18, 3, 2, C.coreW);
+    pc.rect(ox+3, oy-18, 3, 2, C.coreW);
+    // Cahaya keluar
+    pc.px(ox-7, oy-20, C.coreL);
+    pc.px(ox+7, oy-20, C.coreL);
+    pc.px(ox-8, oy-17, C.coreL);
+    pc.px(ox+8, oy-17, C.coreL);
+    // Mulut
+    pc.rect(ox-6, oy-13, 12, 2, C.crack);
+
+    // ====== Lengan ======
+    if(isAct1){
+      // Lengan kanan maju menghantam
+      pc.rect(ox+12, oy-6, 10, 12, C.lt);
+      pc.rect(ox+12, oy-6, 10, 2, C.hi);
+      // Kepalan
+      pc.plate(ox+20, oy-2, 8, 8, C.hi, C.lt, C.md);
+      pc.px(ox+24, oy+1, C.crack);
+      // Impact
+      if(frame>=2){
+        for(let i=0;i<7;i++){
+          pc.px(ox+28+i, oy+2-i, "rgba(148,163,184,0.85)");
+          pc.px(ox+28+i, oy+6+i, "rgba(148,163,184,0.85)");
+        }
+      }
+      // Lengan kiri di sisi
+      pc.rect(ox-20, oy-4, 8, 14, C.md);
+    } else if(isAct2){
+      // Kedua kepalan di atas
+      pc.rect(ox-20, oy-30, 8, 16, C.lt);
+      pc.rect(ox-20, oy-30, 8, 2, C.hi);
+      pc.plate(ox-22, oy-36, 10, 8, C.hi, C.lt, C.md);
+      pc.rect(ox+12, oy-30, 8, 16, C.lt);
+      pc.rect(ox+12, oy-30, 8, 2, C.hi);
+      pc.plate(ox+12, oy-36, 10, 8, C.hi, C.lt, C.md);
+      // Impact di tanah
+      if(frame>=2){
+        for(let i=0;i<8;i++){
+          pc.px(ox-22+i*6, oy+22, "rgba(148,163,184,0.6)");
+          pc.px(ox-22+i*6+3, oy+23, "rgba(148,163,184,0.4)");
+        }
+      }
+    } else {
+      // Idle: lengan di sisi
+      pc.rect(ox-20, oy-4, 8, 14, C.md);
+      pc.rect(ox-20, oy-4, 8, 2, C.lt);
+      pc.plate(ox-22, oy+6, 10, 10, C.hi, C.lt, C.md);
+      pc.rect(ox+12, oy-4, 8, 14, C.md);
+      pc.rect(ox+12, oy-4, 8, 2, C.lt);
+      pc.plate(ox+12, oy+6, 10, 10, C.hi, C.lt, C.md);
+    }
+
+    pc.outline("#050810");
+    pc.ellipse(ox, oy+24, 20, 3, "rgba(0,0,0,0.6)");
+    return pc.canvas;
+  },
+
+  /* =========================================================
+     WYRM — naga merah, sayap, kepala menghadap kanan
+     act1 = nafas api (MAGIC_AOE) | act2 = hantaman/gigit
+     ========================================================= */
+  buildWyrm(frame, state, variant){
+    const pc = new PixelCanvas();
+    const isAct1 = state==="act1";
+    const isAct2 = state==="act2";
+    const isHurt = state==="hurt";
+
+    const C = {
+      hi:"#fca5a5", lt:"#ef4444", md:"#dc2626", dk:"#b91c1c", xd:"#7f1d1d", xxd:"#450a0a",
+      belly:"#fbbf24", bellyD:"#d97706", bellyX:"#92400e",
+      horn:"#4338ca", hornL:"#6366f1",
+      eye:"#facc15", eyeL:"#fef08a",
+      fire:"#f97316", fireY:"#fde047", fireW:"#fef3c7",
+      wing:"#7f1d1d", wingL:"#b91c1c"
+    };
+
+    let bob=0;
+    if(state==="idle") bob=[0,1,2,1][frame];
+    else if(isAct1) bob=[-1,-3,-3,-1,0][frame];
+    else if(isAct2) bob=[0,-1,2,0,-1][frame];
+    else if(isHurt) bob=2;
+
+    let lunge=0;
+    if(isAct1) lunge=[-2,-4,0,1,0][frame];
+    else if(isAct2) lunge=[3,5,-14,-10,-3][frame];
+    else if(isHurt) lunge=(frame===0?6:3);
+
+    const ox = 24 + lunge;
+    const oy = 24 + bob;
+
+    // Wing lift untuk animasi
+    const wingLift = isAct1 ? [0,2,6,4,1][frame] : 0;
+
+    // ====== Sayap belakang ======
+    pc.rect(ox-16, oy-14-wingLift, 12, 20+wingLift, C.wing);
+    pc.rect(ox-15, oy-13-wingLift, 10, 18+wingLift, C.wingL);
+    pc.rect(ox-14, oy-12-wingLift, 8, 10+wingLift, C.md);
+    // Urat sayap
+    pc.line(ox-14, oy-10-wingLift, ox-6, oy+2, C.wing);
+    pc.line(ox-14, oy-6-wingLift, ox-8, oy+2, C.wing);
+    pc.px(ox-12, oy-8-wingLift, C.hi);
+
+    // Ekor
+    pc.rect(ox-18, oy+8, 12, 6, C.md);
+    pc.rect(ox-18, oy+9, 10, 4, C.lt);
+    pc.rect(ox-18, oy+10, 8, 2, C.hi);
+    pc.px(ox-19, oy+11, C.xd);
+
+    // ====== Badan ======
+    pc.plate(ox-10, oy-2, 24, 16, C.hi, C.lt, C.md);
+    // Perut
+    pc.rect(ox-6, oy+8, 18, 6, C.belly);
+    pc.rect(ox-5, oy+9, 16, 4, C.bellyD);
+    // Garis perut
+    for(let i=0;i<5;i++) pc.rect(ox-4+i*4, oy+8, 1, 6, C.bellyX);
+    // Duri punggung
+    pc.px(ox-4, oy-2, C.horn);
+    pc.px(ox+0, oy-2, C.horn);
+    pc.px(ox+4, oy-2, C.horn);
+    pc.px(ox+8, oy-3, C.horn);
+    pc.px(ox-4, oy-3, C.hornL);
+    pc.px(ox, oy-3, C.hornL);
+    pc.px(ox+4, oy-3, C.hornL);
+
+    // Kaki
+    pc.rect(ox-6, oy+14, 6, 7, C.dk);
+    pc.rect(ox+8, oy+14, 6, 7, C.dk);
+    pc.rect(ox-7, oy+20, 8, 3, C.xxd);
+    pc.rect(ox+7, oy+20, 8, 3, C.xxd);
+    // Kuku
+    pc.px(ox-7, oy+20, "#f8fafc");
+    pc.px(ox-5, oy+20, "#f8fafc");
+    pc.px(ox+13, oy+20, "#f8fafc");
+    pc.px(ox+15, oy+20, "#f8fafc");
+
+    // ====== Leher & kepala (menghadap kanan) ======
+    pc.rect(ox+8, oy-14, 12, 14, C.md);
+    pc.rect(ox+9, oy-13, 10, 12, C.lt);
+    // Kepala
+    pc.rect(ox+14, oy-24, 16, 12, C.md);
+    pc.rect(ox+15, oy-23, 14, 10, C.lt);
+    // Moncong
+    pc.rect(ox+28, oy-20, 6, 6, C.md);
+    pc.rect(ox+29, oy-19, 5, 4, C.lt);
+    // Rahang bawah
+    pc.rect(ox+16, oy-14, 16, 3, C.dk);
+    // Gigi
+    pc.px(ox+20, oy-14, "#ffffff");
+    pc.px(ox+24, oy-14, "#ffffff");
+    pc.px(ox+28, oy-14, "#ffffff");
+    pc.px(ox+31, oy-14, "#ffffff");
+    // Mata
+    pc.rect(ox+17, oy-22, 4, 3, C.eye);
+    pc.px(ox+18, oy-21, "#0b1220");
+    pc.px(ox+17, oy-22, C.eyeL);
+    // Tanduk melengkung
+    pc.rect(ox+16, oy-28, 3, 5, C.horn);
+    pc.rect(ox+25, oy-28, 3, 5, C.horn);
+    pc.px(ox+16, oy-29, C.hornL);
+    pc.px(ox+26, oy-29, C.hornL);
+    // Duri pipi
+    pc.px(ox+14, oy-18, C.horn);
+    pc.px(ox+14, oy-16, C.horn);
+
+    // ====== Nafas api (act1) ======
+    if(isAct1 && frame>=2){
+      // Semburan api keluar dari mulut
+      const fx = ox + 34;
+      const fy = oy - 15;
+      const spread = [3, 8, 12][frame-2];
+      for(let i=0;i<spread;i++){
+        pc.px(fx+i, fy-i*0.3, i<3?C.fireW:i<6?C.fireY:C.fire);
+        pc.px(fx+i, fy+1-i*0.3, i<3?C.fireY:i<6?C.fire:C.md);
+        pc.px(fx+i, fy+2-i*0.3, i<2?C.fireW:i<5?C.fireY:C.fire);
+        if(i>3){
+          pc.px(fx+i, fy-1-i*0.3, C.fire);
+          pc.px(fx+i, fy+3-i*0.3, C.md);
+        }
+      }
+    }
+    // Cakar maju (act2)
+    if(isAct2 && frame>=2){
+      // Cakar depan
+      pc.rect(ox+34, oy-4, 6, 4, C.hi);
+      pc.rect(ox+38, oy-5, 4, 6, C.lt);
+      pc.px(ox+41, oy-3, "#ffffff");
+      pc.px(ox+41, oy+1, "#ffffff");
+    }
+
+    pc.outline("#1a0505");
+    pc.ellipse(ox, oy+24, 24, 3, "rgba(220,38,38,0.35)");
+    return pc.canvas;
+  }
+
+
+};
+
+/* =========================================================
+   WORD BANKS
+   ========================================================= */
+const RAW_WORDS=["API","AIR","BATU","BESI","BAJA","BUMI","KAYU","KUAT","MATI","HIDUP","RACUN","PEDANG","PANAH","KILAT","SIHIR","DARAH","HANTU","SERANG","NAGA","KERA","KUCING","BURUNG","RAJA","RATU","KOTA","DESA","HUTAN","LAUT","LANGIT","MAKAN","MINUM","JALAN","LARI","LOMPAT","TIKAM","TEBAS","HANCUR","RUSAK","SEHAT","OBAT","RAMUAN","CAHAYA","GELAP","SUCI","KUTUK","JIWA","RAGA","MATA","TANGAN","KAKI","KEPALA","DADA","TULANG","BEKU","PANAS","DINGIN","ANGIN","DAUN","AKAR","POHON","EMAS","PERAK","KACA","KERTAS","BUKU","ILMU","WAKTU","HARI","MALAM","SIANG","PAGI","SORE","BULAN","BINTANG","SURYA","GUGUR","MEKAR","TUMBUH","JATUH","BANGKIT","MENANG","KALAH","BISA","BUKAN","KAMI","KITA","MEREKA","KAMU","SAYA","DIA","ADA","DARI","PADA","DENGAN","UNTUK","JIKA","MAKA","LAGI","AKAN","SUDAH","TELAH","PERNAH","BARU","LAMA","BESAR","KECIL","TINGGI","RENDAH","CEPAT","LAMBAT","KERAS","LEMBUT","TAJAM","TUMPUL","MERAH","BIRU","HIJAU","KUNING","HITAM","PUTIH","ABU","UNGU","COKLAT","GIGI","GULA","SUSU","KOPI","TEH","SAPU","TALI","TAHU","IKAN","AYAM","RUSA","KATA","SEGI","TEBA","ROTI","NASI","BUAH","APEL","DURI","KULIT","ASAP","DEBU","TANAH","LUMPUR","PASIR","KABUT","PETIR","TOPAN","ARUS","HULU","HILIR","PINTU","KUNCI","DINDING","ATAP","LANTAI","TIANG","PAGAR","KANDANG","TAMAN","KOLAM","SUMUR","PERAHU","KAPAL","LAYAR","DAYUNG","KERETA","RODA","RANTAI","PERISAI","HELM","SEPATU","TOPI","JUBAH","CINCIN","KALUNG","MAHKOTA","TONGKAT","BUSUR","ANAK","BAPAK","IBU","GURU","TEMAN","SAHABAT","MUSUH","LAWAN","PASUKAN","TENTARA","KSATRIA","PENYIHIR","TABIB","PEMBURU","PENGAWAL","PANGERAN","PUTRI","DEWA","DEWI","MONSTER","GOBLIN","ORC","SLIME","ZOMBIE","IBLIS","SETAN","MANA","KAU","INI","ITU","APA","BILA","SAAT","TADI","ESOK","SINI","SANA","BAIK","JAHAT","DEKAT","JAUH","LUAR","DALAM","ATAS","BAWAH","KIRI","KANAN","FIRE","ICE","BOLT","SWORD","SHIELD","HEAL","SLASH","MAGIC","POWER","STAR"];
+const EXTRA_WORDS=["RUMAH","BATIK","SENJATA","JURUS","PERANG","DAMAI","MUSIM","HUJAN","BADAI","GUNUNG","BUKIT","LEMBAH","GUA","KERIS","TOMBAK","KAPAK","GADA","PALU","BERANI","PERKASA","TAKUT","MARAH","CINTA","HATI","PIKIR","HURUF","NAMA","SUARA","GEMA","TERANG","REDUP","SINAR","KILAU","INTAN","OBOR","BARA","NYALA","BAKAR","LELEH","SALJU","EMBUN","BANJIR","GEMPA","MANTRA","JAMPI","ROH","ARWAH","LAVA","SEMBUH","PULIH","BERKAT","DOA","RAWAT","OBATI","LINDUNG","TAHAN","LUKA","SAKIT","LEMAH","BAJU","TAMENG","PAHLAWAN","BENDERA","PERMATA","BERLIAN","MUTIARA","LILIN","BIDIK","TEMBAK"];
+
+const ALL_WORDS = RAW_WORDS.concat(EXTRA_WORDS);
+const EASY_WORDS  = ALL_WORDS.filter(w=>w.length>=3&&w.length<=4);
+const MEDIUM_WORDS= ALL_WORDS.filter(w=>w.length>=5&&w.length<=6);
+const HARD_WORDS  = ALL_WORDS.filter(w=>w.length>=7&&w.length<=10);
+const THEMED_WORDS= {};
+
+/* =========================================================
+   HERO & ENEMY CATALOG
+   ========================================================= */
+const HERO_CATALOG={
+  warrior:{name:"Ksatria",spriteKey:"warrior",role:"Warrior",maxHp:155,maxMp:30,baseX:520,baseY:160,
+    themes:["PEDANG","TEBAS","TIKAM","BAJA","BESI","SERANG","LAWAN","KERAS","TAJAM","PERISAI","TOMBOK","HELM","KSATRIA","PASUKAN","TENTARA","MENANG","SLASH","SWORD","SHIELD","POWER","TOMBAK","KAPAK","GADA","PALU","KERIS","BERANI","PERKASA","JURUS","SENJATA","PERANG"],
+    skills:[
+      {name:"Tebas Pedang",mpCost:0,basePower:28,desc:"Tebasan pedang cepat ke target.",handler:"SINGLE_ATTACK",animVariant:0,projectile:{type:"slash",color:"#f8fafc",trailColor:"#38bdf8",size:16},options:{particleColor:"#ef4444"}},
+      {name:"Benteng Perisai",mpCost:10,basePower:45,desc:"Hantaman perisai berat (+ Stun 1 turn).",handler:"SINGLE_ATTACK",animVariant:1,projectile:{type:"shield",color:"#f8fafc",trailColor:"#38bdf8",size:20},options:{stun:true,particleColor:"#ef4444"}}
+    ]},
+  ranger:{name:"Pemanah",spriteKey:"ranger",role:"Ranger",maxHp:110,maxMp:45,baseX:635,baseY:160,
+    themes:["PANAH","BUSUR","PEMBURU","BIDIK","TEMBAK","CEPAT","ANGIN","HUTAN","POHON","DAUN","BURUNG","RUSA","ELANG","MATA","DURI","RACUN","TAJAM","JAUH","BATIK","BIDIK","TEMBAK"],
+    skills:[
+      {name:"Panah Beracun",mpCost:6,basePower:30,desc:"Panah menusuk & meracuni target.",handler:"SINGLE_ATTACK",animVariant:0,projectile:{type:"arrow",color:"#4ade80",trailColor:"#15803d",size:14},options:{poisonTurns:2,particleColor:"#4ade80"}},
+      {name:"Hujan Panah",mpCost:14,basePower:36,desc:"Hujani seluruh musuh dengan panah.",handler:"AOE_ATTACK",animVariant:1,projectile:{type:"arrow",color:"#facc15",trailColor:"#eab308",size:16,fromTop:true},options:{particleColor:"#facc15"}}
+    ]},
+  mage:{name:"Penyihir",spriteKey:"mage",role:"Mage",maxHp:85,maxMp:80,baseX:745,baseY:160,
+    themes:["API","KILAT","PETIR","SIHIR","ANGIN","BEKU","PANAS","ICE","FIRE","BOLT","MAGIC","TOPAN","BINTANG","ILMU","ASAP","BARA","NYALA","BAKAR","SALJU","MANTRA","JAMPI","TONGKAT","PENYIHIR","STAR","LAVA","GEMPA"],
+    skills:[
+      {name:"Bola Api",mpCost:12,basePower:34,desc:"Sihir api membakar seluruh musuh.",handler:"AOE_ATTACK",animVariant:0,projectile:{type:"fireball",color:"#f97316",trailColor:"#ef4444",size:24},options:{particleColor:"#f97316"}},
+      {name:"Petir Halilintar",mpCost:18,basePower:60,desc:"Petir dahsyat ke target tunggal.",handler:"SINGLE_ATTACK",animVariant:1,projectile:{type:"lightning",color:"#67e8f9",trailColor:"#a855f7",size:18,fromTop:true},options:{labelSuffix:"(PETIR)",particleColor:"#38bdf8",particleCount:30}}
+    ]},
+  cleric:{name:"Tabib",spriteKey:"cleric",role:"Cleric",maxHp:105,maxMp:60,baseX:855,baseY:160,
+    themes:["SEHAT","OBAT","RAMUAN","SUCI","CAHAYA","HIDUP","JIWA","DEWA","DEWI","TABIB","HEAL","SEMBUH","PULIH","BERKAT","LEMBUT","BAIK","PAGI","DOA","RAWAT","OBATI","LINDUNG","TAMENG","TAHAN"],
+    skills:[
+      {name:"Gada Cahaya",mpCost:6,basePower:25,desc:"Hantam target + pulihkan rekan HP terendah.",handler:"SMITE_HEAL",animVariant:0,projectile:{type:"smite",color:"#facc15",trailColor:"#f59e0b",size:16},options:{particleColor:"#facc15",healBase:20}},
+      {name:"Doa Pemulihan",mpCost:16,basePower:38,desc:"Pulihkan HP seluruh party.",handler:"AOE_HEAL",animVariant:1,options:{}}
+    ]}
+};
+const THEMES={};
+Object.values(HERO_CATALOG).forEach(h=>{THEMES[h.spriteKey]=new Set(h.themes||[]);});
+Object.keys(THEMES).forEach(k=>{
+  THEMED_WORDS[k] = {
+    EASY:   EASY_WORDS.filter(w=>THEMES[k].has(w)),
+    MEDIUM: MEDIUM_WORDS.filter(w=>THEMES[k].has(w)),
+    HARD:   HARD_WORDS.filter(w=>THEMES[k].has(w))
+  };
+});
+
+const ENEMY_CATALOG={
+  slime_acid:{name:"Slime Asam",spriteKey:"slime",role:"Minion",maxHp:85,actions:[
+    {type:"ATTACK",weight:70,powerMod:-2,animVariant:0,desc:(v)=>`💧 Asam ${v}`},
+    {type:"POISON_SPIT",weight:30,animVariant:1,desc:()=>`☠️ Racun`}
+  ]},
+  orc_brute:{name:"Orc Brute",spriteKey:"orc",role:"Brute",maxHp:160,actions:[
+    {type:"ATTACK",weight:100,powerMod:0,animVariant:0,desc:(v)=>`⚔️ ${v}`}
+  ]},
+  drakonit:{name:"Drakonit",spriteKey:"drakonit",role:"Caster",maxHp:110,actions:[
+    {type:"MAGIC_AOE",weight:65,powerMod:0,animVariant:0,desc:(v)=>`⚡ ${v} AoE`},
+    {type:"DOOM",weight:35,animVariant:1,desc:()=>`💣 Kutuk`}
+  ]},
+  golem_rock:{name:"Golem Batu",spriteKey:"golem",role:"Tank",maxHp:240,actions:[
+    {type:"ATTACK",weight:60,powerMod:3,animVariant:0,desc:(v)=>`🪨 Hantam ${v}`},
+    {type:"STUN_ATTACK",weight:40,powerMod:0,animVariant:1,desc:(v)=>`💫 Gempa ${v}`}
+  ]},
+  orc_general:{name:"Jenderal Orc",spriteKey:"orc",role:"Boss",maxHp:280,actions:[
+    {type:"ATTACK",weight:70,powerMod:4,animVariant:0,desc:(v)=>`⚔️ ${v}`},
+    {type:"STUN_ATTACK",weight:30,powerMod:0,animVariant:1,desc:(v)=>`💫 Gada ${v}`}
+  ]},
+  ancient_mage:{name:"Penyihir Kuno",spriteKey:"drakonit",role:"Caster",maxHp:180,actions:[
+    {type:"MAGIC_AOE",weight:65,powerMod:3,animVariant:0,desc:(v)=>`⚡ ${v} AoE`},
+    {type:"DOOM",weight:35,animVariant:1,desc:()=>`💣 Kutuk`}
+  ]},
+  ancient_dragon:{name:"Naga Api Kuno",spriteKey:"wyrm",role:"Boss",maxHp:380,actions:[
+    {type:"ATTACK",weight:45,powerMod:5,animVariant:1,desc:(v)=>`🔥 Cakar ${v}`},
+    {type:"MAGIC_AOE",weight:35,powerMod:4,animVariant:0,desc:(v)=>`🌋 Nafas Api`},
+    {type:"DOOM",weight:20,animVariant:1,desc:()=>`💣 Bom`}
+  ]},
+  dark_wyrm:{name:"Raja Naga Kegelapan",spriteKey:"wyrm",role:"Boss",maxHp:520,actions:[
+    {type:"ATTACK",weight:40,powerMod:7,animVariant:1,desc:(v)=>`💀 Robek ${v}`},
+    {type:"MAGIC_AOE",weight:35,powerMod:5,animVariant:0,desc:(v)=>`⚡ Badai`},
+    {type:"STUN_ATTACK",weight:25,powerMod:3,animVariant:1,desc:(v)=>`💫 Raung ${v}`}
+  ]}
+};
+
+const WAVES=[
+  ["slime_acid","orc_brute"],
+  ["orc_general","drakonit"],
+  ["golem_rock","ancient_mage"],
+  ["ancient_dragon","orc_brute"],
+  ["dark_wyrm","golem_rock"]
+];
+
+const ALL_RELICS=[
+  {id:"quill",name:"Pena Emas",icon:"🪶",desc:"Kata sempurna 5+ huruf memulihkan 14 HP ke seluruh party.",type:"HEAL_ON_PERFECT"},
+  {id:"vampire",name:"Taring Vampir",icon:"🩸",desc:"Setiap serangan memulihkan HP 25% dari total damage.",type:"LIFESTEAL"},
+  {id:"magma",name:"Inti Magma",icon:"🌋",desc:"Kata berawalan vokal (A,I,U,E,O) memberi +14 Fire DMG.",type:"VOWEL_FIRE"},
+  {id:"martyr",name:"Genta Martir",icon:"🔔",desc:"Bila ada rekan HP <35%, seluruh efek skill +40%.",type:"CRISIS_BOOST"},
+  {id:"compass",name:"Kompas Kata",icon:"🧭",desc:"Kata yang muncul dijamin cocok tema hero.",type:"MORE_THEME"},
+  {id:"grail",name:"Cawan Suci",icon:"🏆",desc:"Setiap awal turn, semua hero +4 MP tambahan.",type:"TURN_MP"}
+];
+
+class Entity{
+  constructor(name,spriteKey,role,maxHp,maxMp,x,y,isHero,catalogKey=null){
+    this.name=name;this.spriteKey=spriteKey;this.role=role;
+    this.maxHp=maxHp;this.hp=maxHp;this.maxMp=maxMp;this.mp=maxMp;
+    this.x=x;this.y=y;this.baseX=x;this.baseY=y;this.isHero=isHero;this.catalogKey=catalogKey;
+    this.animOffset=0;this.isActing=false;this.stunned=false;this.frozen=false;
+    this.burnTurns=0;this.poisonTurns=0;this.intent=null;this.skills=[];
+    this.actStart=0;this.hurtTimer=0;this.deathTime=0;this.actVariant=0;
+  }
+}
+const heroes=Object.keys(HERO_CATALOG).map(key=>{
+  const data=HERO_CATALOG[key];
+  const ent=new Entity(data.name,data.spriteKey,data.role,data.maxHp,data.maxMp,data.baseX,data.baseY,true,key);
+  ent.skills=data.skills||[];
+  return ent;
+});
+const HERO_SKILLS=heroes.map(h=>h.skills);
+
+const canvas=document.getElementById("gameCanvas");
+const ctx=canvas.getContext("2d");
+ctx.imageSmoothingEnabled=false;
+
+/* =========================================================
+   WORD MODIFIERS
+   ========================================================= */
+const WORD_MODIFIERS=[
+  {id:"FIRE",     icon:"🔥", color:"#f97316", chance:0.11},
+  {id:"FROST",    icon:"❄️", color:"#93c5fd", chance:0.09},
+  {id:"LIGHTNING",icon:"⚡", color:"#67e8f9", chance:0.08},
+  {id:"STAR",     icon:"⭐", color:"#facc15", chance:0.05},
+  {id:"MANA",     icon:"💎", color:"#06b6d4", chance:0.07},
+  {id:"SHIELD",   icon:"🛡️", color:"#eab308", chance:0.05},
+];
+function rollModifier(){
+  let r=Math.random();
+  for(const m of WORD_MODIFIERS){
+    if(r<m.chance) return m;
+    r-=m.chance;
+  }
+  return null;
+}
+
+/* =========================================================
+   STATE
+   ========================================================= */
+const STATE={
+  turnPhase:"TITLE",turnId:0,
+  projectileLedger:{actionId:null,pending:0},
+  activeHeroIndex:0,selectedSkillIndex:0,selectedEnemyIndex:0,
+  particles:[],damageNumbers:[],projectiles:[],
+  wave:1,rushGauge:0,partyGuardTurns:0,
+  overSince:0,animTimer:0,screenShake:0,hitFreezeTimer:0,
+  crtEnabled:true,relics:[],offeredRelics:[],campfireSparks:[],
+  // ── TYPING (per-kata) ──
+  currentWord:"",typedChars:0,wordStartTime:0,
+  wordModifier:null,wordThemeMatch:false,wordSource:"EASY",
+  wrongKeysInWord:0,stunUntil:0,skipped:false,wordQueue:[],
+  // ── TURN (per-hero sesi) ──
+  turnTimeLimit:10000,     // durasi sesi (ms). Ubah 5000 untuk 5 detik
+  turnTimeStart:0,
+  turnElapsed:0,
+  turnWordsTyped:0,
+  turnDamageTotal:0,
+  turnBestWord:"",
+  turnBestDamage:0,
+  turnWordStreak:0,
+  turnMaxStreak:0,
+  turnWordsHistory:[],
+  // ── STATS global ──
+  combo:0,maxCombo:0,wordsPerfect:0,
+  stats:{wordsCount:0,bestWord:"-",bestWordDmg:0,totalDamageDealt:0,bestSpeed:0}
+};
+
+/* =========================================================
+   WORD SELECTION
+   ========================================================= */
+function getDifficultyForWave(w){
+  if(w<=2) return "EASY";
+  if(w<=4) return "MEDIUM";
+  return "HARD";
+}
+function pickWord(hero, difficulty){
+  const useCompass = STATE.relics.some(r=>r.id==="compass");
+  const themed = THEMED_WORDS[hero.spriteKey]?.[difficulty] || [];
+  const general = difficulty==="EASY"?EASY_WORDS : difficulty==="MEDIUM"?MEDIUM_WORDS : HARD_WORDS;
+  let pool, preferTheme = useCompass || Math.random() < 0.55;
+  if(preferTheme && themed.length>0) pool = themed;
+  else pool = general;
+  return pool[Math.floor(Math.random()*pool.length)];
+}
+function isThemeMatch(word, hero){ return THEMES[hero.spriteKey] && THEMES[hero.spriteKey].has(word); }
+
+/* =========================================================
+   COMBAT HELPERS
+   ========================================================= */
+function changeMp(entity,delta){if(!entity)return 0;const before=entity.mp;entity.mp=Math.max(0,Math.min(entity.maxMp,entity.mp+Math.round(delta)));return entity.mp-before;}
+function beginAction(){STATE.turnId++;STATE.projectileLedger={actionId:STATE.turnId,pending:0};return STATE.turnId;}
+function isActionValid(id){return id===STATE.turnId&&!isCombatFinished();}
+function isCombatFinished(){return STATE.turnPhase==="GAME_OVER"||STATE.turnPhase==="VICTORY";}
+function canPlayerAct(){return (STATE.turnPhase==="HERO_READY"||STATE.turnPhase==="HERO_TYPING"||STATE.turnPhase==="HERO_TURN_END")&&!isCombatFinished();}
+function normalizeSelectedTarget(){if(enemies[STATE.selectedEnemyIndex]&&enemies[STATE.selectedEnemyIndex].hp>0)return;const f=enemies.findIndex(e=>e.hp>0);STATE.selectedEnemyIndex=f>=0?f:0;}
+function getSelectedTarget(){normalizeSelectedTarget();return enemies[STATE.selectedEnemyIndex]&&enemies[STATE.selectedEnemyIndex].hp>0?enemies[STATE.selectedEnemyIndex]:null;}
+function refreshEnemyIntents(){rollEnemyIntents(enemies,STATE.wave);}
+function rollEnemyIntents(enemyList,wave){
+  const cw=wave!==undefined?wave:STATE.wave;
+  enemyList.forEach(en=>{
+    if(en.hp<=0)return;
+    if(en.frozen){en.intent={type:"FROZEN",desc:"❄️ Membeku",animVariant:0};return;}
+    if(en.stunned){en.intent={type:"STUN",desc:"💫 Pusing",animVariant:0};return;}
+    const cat=ENEMY_CATALOG[en.catalogKey]||{};
+    const actions=cat.actions||[{type:"ATTACK",weight:100,powerMod:0,animVariant:0,desc:(v)=>`⚔️ ${v}`}];
+    const totW=actions.reduce((s,a)=>s+(a.weight||1),0);
+    let roll=Math.random()*totW,chosen=actions[0];
+    for(const a of actions){roll-=(a.weight||1);if(roll<=0){chosen=a;break;}}
+    const isCaster=en.role==="Caster"||chosen.type==="MAGIC_AOE";
+    const basePwr=getEnemyAttackPower(cw,isCaster);
+    const pwr=Math.max(1,basePwr+(chosen.powerMod||0));
+    en.intent={type:chosen.type,val:pwr,desc:chosen.desc?chosen.desc(pwr):`⚔ ${pwr}`,animVariant:chosen.animVariant||0};
+  });
+}
+function makeWave(n){
+  const xs=[320,180];
+  const waveKeys=WAVES[n-1]||WAVES[WAVES.length-1];
+  const list=waveKeys.map((key,i)=>{
+    const data=ENEMY_CATALOG[key]||{name:"Monster",spriteKey:"orc",role:"Brute",maxHp:150};
+    return new Entity(data.name,data.spriteKey,data.role,data.maxHp,0,xs[i]||(320-i*140),160,false,key);
+  });
+  rollEnemyIntents(list,n);
+  return list;
+}
+let enemies=makeWave(1);
+
+function applyDamage(source,target,amount,options={}){
+  if(!target||target.hp<=0)return 0;
+  const before=target.hp;
+  let finalDamage=Math.max(0,Math.round(amount));
+  if(options.damageMultiplier) finalDamage=Math.round(finalDamage*options.damageMultiplier);
+  if(target.isHero&&STATE.partyGuardTurns>0) finalDamage=Math.round(finalDamage*BALANCE.guardMultiplier);
+  target.hp=Math.max(0,target.hp-finalDamage);
+  const actualDamage=before-target.hp;
+  target.hurtTimer=260;
+  if(source&&source.isHero){
+    STATE.stats.totalDamageDealt+=actualDamage;
+    if(STATE.relics.some(r=>r.id==="vampire")&&actualDamage>0){
+      const healAmt=Math.round(actualDamage*BALANCE.vampireLeechPercent);
+      if(healAmt>0) applyHealing(source,source,healAmt,{yOffset:75});
+    }
+  }
+  const label=options.label||(actualDamage>0?`-${actualDamage}`:"MISS");
+  const color=options.color||(options.isCrit?"#fbbf24":target.isHero?"#ef4444":"#ffffff");
+  spawnDamageNumber(target.x,target.y-(options.yOffset||40),label,color);
+  spawnParticles(target.x,target.y,options.particleColor||(target.isHero?"#ef4444":"#f97316"),options.particleCount||22);
+  if(options.isCrit){STATE.hitFreezeTimer=55;STATE.screenShake=10;}
+  else if(finalDamage>16){STATE.screenShake=Math.max(STATE.screenShake,6);}
+  if(target.hp<=0){
+    target.isActing=false;target.animOffset=0;target.deathTime=performance.now();target.hurtTimer=0;
+    if(!target.isHero){
+      target.stunned=false;target.frozen=false;target.burnTurns=0;target.poisonTurns=0;target.intent=null;
+      normalizeSelectedTarget();
+    } else {
+      if(heroes.every(h=>h.hp<=0)){STATE.turnPhase="GAME_OVER";STATE.overSince=performance.now();beginAction();}
+    }
+  }
+  return actualDamage;
+}
+function applyHealing(source,target,amount,options={}){
+  if(!target||target.hp<=0)return 0;
+  const before=target.hp;
+  target.hp=Math.min(target.maxHp,target.hp+Math.max(0,Math.round(amount)));
+  const actualHealed=target.hp-before;
+  if(actualHealed>0){
+    spawnDamageNumber(target.x,target.y-(options.yOffset||40),`+${actualHealed}`,"#4ade80");
+    spawnParticles(target.x,target.y,"#4ade80",18);
+  }
+  return actualHealed;
+}
+function createProjectile(config){
+  if(config.countPending!==false){
+    if(STATE.projectileLedger.actionId===config.actionId) STATE.projectileLedger.pending++;
+    else STATE.projectileLedger={actionId:config.actionId,pending:1};
+  }
+  STATE.projectiles.push({
+    x:config.x,y:config.y,targetX:config.targetX,targetY:config.targetY,
+    color:config.color,trailColor:config.trailColor,size:config.size||16,
+    type:config.type||"slash",actionId:config.actionId,angle:0,trail:[],onHit:config.onHit,
+    life:0,spiralPhase:0
+  });
+}
+function resolveProjectile(p){
+  if(isActionValid(p.actionId)&&typeof p.onHit==="function")p.onHit();
+  if(STATE.projectileLedger.actionId===p.actionId){
+    STATE.projectileLedger.pending=Math.max(0,STATE.projectileLedger.pending-1);
+  }
+}
+
+/* =========================================================
+   TYPING + TURN FLOW
+   ========================================================= */
+function startWalkInTransition(){
+  STATE.turnPhase="HERO_WALK_IN";
+  heroes.forEach((h,idx)=>{h.x=canvas.width+60+idx*95;h.y=h.baseY;h.isActing=false;h.animOffset=0;});
+}
+function startWalkOutTransition(){
+  STATE.turnPhase="HERO_WALK_OUT";
+}
+function updateHeroWalking(dt){
+  const timeScale=Math.min(2.5,dt/16.66);
+  const walkSpeed=3.6*timeScale;
+  if(STATE.turnPhase==="HERO_WALK_IN"){
+    let allIn=true;
+    heroes.forEach(h=>{
+      if(h.hp>0||STATE.wave===1){ if(h.x>h.baseX){h.x=Math.max(h.baseX,h.x-walkSpeed);allIn=false;} }
+    });
+    if(allIn){
+      STATE.turnPhase="HERO_READY";
+      STATE.activeHeroIndex=Math.max(0,heroes.findIndex(h=>h.hp>0));
+      STATE.selectedSkillIndex=0;
+      normalizeSelectedTarget();
+      refreshEnemyIntents();
+      startWordQueue();
+      spawnDamageNumber(canvas.width/2,190,`⚔️ RUANG ${STATE.wave}: BERSIAP! ⚔`,"#facc15",true);
+    }
+  } else if(STATE.turnPhase==="HERO_WALK_OUT"){
+    let allExit=true;
+    heroes.forEach(h=>{if(h.hp>0){h.x-=walkSpeed*1.25;if(h.x>-100)allExit=false;}});
+    if(allExit){
+      if(STATE.wave>=WAVES.length){STATE.turnPhase="VICTORY";STATE.overSince=performance.now();}
+      else triggerCampfireIntermission();
+    }
+  }
+}
+function startWordQueue(){
+  const hero = heroes[STATE.activeHeroIndex];
+  const diff = getDifficultyForWave(STATE.wave);
+  STATE.wordQueue = [];
+  for(let i=0;i<5;i++) STATE.wordQueue.push(pickWord(hero,diff));
+  STATE.currentWord = STATE.wordQueue.shift();
+  STATE.wordQueue.push(pickWord(hero,diff));
+  STATE.typedChars = 0;
+  STATE.wrongKeysInWord = 0;
+  STATE.wordStartTime = performance.now();
+  STATE.wordModifier = rollModifier();
+  STATE.wordThemeMatch = isThemeMatch(STATE.currentWord, hero);
+  STATE.wordSource = diff;
+  STATE.skipped = false;
+  STATE.turnElapsed = 0;
+  STATE.turnWordsTyped = 0;
+  STATE.turnDamageTotal = 0;
+  STATE.turnBestWord = "";
+  STATE.turnBestDamage = 0;
+  STATE.turnWordStreak = 0;
+  STATE.turnMaxStreak = 0;
+  STATE.turnWordsHistory = [];
+}
+function beginHeroTypingTurn(){
+  if(STATE.turnPhase!=="HERO_READY") return;
+  const hero = heroes[STATE.activeHeroIndex];
+  const skill = HERO_SKILLS[STATE.activeHeroIndex][STATE.selectedSkillIndex];
+  if(hero.mp < skill.mpCost){
+    spawnDamageNumber(hero.x, hero.y-55, "MP KURANG!", "#38bdf8");
+    AudioSys.playKeyBad();
+    return;
+  }
+  changeMp(hero, -skill.mpCost);
+  STATE.turnPhase = "HERO_TYPING";
+  STATE.turnTimeStart = performance.now();
+  STATE.turnElapsed = 0;
+  STATE.wordStartTime = performance.now();
+  AudioSys.playSpecial();
+  STATE.screenShake = 6;
+  spawnDamageNumber(canvas.width/2, 250, "⚡ MULAI! KETIK SEBANYAK MUNGKIN!", "#facc15", true);
+}
+function finishHeroTypingTurn(){
+  if(STATE.turnPhase!=="HERO_TYPING") return;
+  STATE.turnPhase = "HERO_TURN_END";
+  STATE.rushGauge = Math.min(100, STATE.rushGauge + STATE.turnWordsTyped*3 + STATE.turnMaxStreak*2);
+  if(STATE.turnBestDamage > STATE.stats.bestWordDmg){
+    STATE.stats.bestWord = STATE.turnBestWord;
+    STATE.stats.bestWordDmg = STATE.turnBestDamage;
+  }
+  AudioSys.playSpecial();
+}
+function advanceToNextWord(){
+  const hero = heroes[STATE.activeHeroIndex];
+  const diff = getDifficultyForWave(STATE.wave);
+  if(STATE.wordQueue.length < 4) STATE.wordQueue.push(pickWord(hero,diff));
+  STATE.currentWord = STATE.wordQueue.shift();
+  STATE.wordQueue.push(pickWord(hero,diff));
+  STATE.typedChars = 0;
+  STATE.wrongKeysInWord = 0;
+  STATE.wordStartTime = performance.now();
+  STATE.wordModifier = rollModifier();
+  STATE.wordThemeMatch = isThemeMatch(STATE.currentWord, hero);
+  STATE.skipped = false;
+}
+function handleTypingKey(char){
+  if(STATE.turnPhase!=="HERO_TYPING") return;
+  if(performance.now() < STATE.stunUntil) return;
+  if(!STATE.currentWord) return;
+  const target = STATE.currentWord[STATE.typedChars];
+  if(!target) return;
+  if(char.toUpperCase() === target){
+    STATE.typedChars++;
+    AudioSys.playKeyOk(500 + STATE.typedChars*40);
+    const hero = heroes[STATE.activeHeroIndex];
+    spawnParticles(hero.x, hero.y-60, STATE.wordModifier?STATE.wordModifier.color:"#38bdf8", 4);
+    if(STATE.typedChars >= STATE.currentWord.length) completeWord();
+  } else {
+    STATE.wrongKeysInWord++;
+    STATE.turnWordStreak = 0;
+    STATE.combo = 0;
+    STATE.stunUntil = performance.now() + BALANCE.wrongKeyStunMs;
+    AudioSys.playKeyBad();
+    STATE.screenShake = 4;
+    const hero = heroes[STATE.activeHeroIndex];
+    spawnDamageNumber(hero.x, hero.y-90, "✗", "#f87171", true);
+  }
+}
+function completeWord(){
+  if(STATE.turnPhase!=="HERO_TYPING") return;
+  const hero = heroes[STATE.activeHeroIndex];
+  const skill = HERO_SKILLS[STATE.activeHeroIndex][STATE.selectedSkillIndex];
+  const elapsed = performance.now() - STATE.wordStartTime;
+  const cps = STATE.currentWord.length / (elapsed/1000);
+  let speedMult = 1.2;
+  if(cps >= 6) speedMult = 3.0;
+  else if(cps >= 4) speedMult = 2.2;
+  else if(cps >= 2.5) speedMult = 1.6;
+  const isPerfect = STATE.wrongKeysInWord === 0;
+  if(isPerfect){
+    STATE.turnWordStreak++;
+    STATE.combo++;
+    STATE.wordsPerfect++;
+    STATE.maxCombo = Math.max(STATE.maxCombo, STATE.combo);
+    if(STATE.turnWordStreak > STATE.turnMaxStreak) STATE.turnMaxStreak = STATE.turnWordStreak;
+  } else {
+    STATE.turnWordStreak = 0;
+    STATE.combo = 0;
+  }
+  if(cps > STATE.stats.bestSpeed) STATE.stats.bestSpeed = cps;
+  const streakMult = 1 + Math.min(STATE.turnWordStreak*0.15, 1.0);
+  const wordLengthBonus = STATE.currentWord.length * 5;
+  const themeMult = STATE.wordThemeMatch ? BALANCE.themeBonusMultiplier : 1.0;
+  let modMult = 1.0;
+  if(STATE.wordModifier){
+    if(STATE.wordModifier.id==="STAR") modMult *= BALANCE.starMultiplierBonus;
+    else if(STATE.wordModifier.id==="FIRE") modMult *= 1.3;
+    else if(STATE.wordModifier.id==="FROST") modMult *= 1.2;
+    else if(STATE.wordModifier.id==="LIGHTNING") modMult *= 1.2;
+  }
+  let crisisMult = 1.0;
+  if(STATE.relics.some(r=>r.id==="martyr")){
+    const crisis = heroes.some(h=>h.hp>0 && (h.hp/h.maxHp) < BALANCE.crisisThreshold);
+    if(crisis) crisisMult = BALANCE.crisisMultiplier;
+  }
+  const mult = speedMult * streakMult * themeMult * modMult * crisisMult;
+  let totalPower = Math.round(skill.basePower * mult) + wordLengthBonus;
+  if("AIUEO".includes(STATE.currentWord[0]) && STATE.relics.some(r=>r.id==="magma")){
+    totalPower += BALANCE.magmaFireBonus;
+  }
+  STATE.stats.wordsCount++;
+  STATE.turnWordsTyped++;
+  STATE.turnDamageTotal += totalPower;
+  if(totalPower > STATE.turnBestDamage){
+    STATE.turnBestDamage = totalPower;
+    STATE.turnBestWord = STATE.currentWord;
+  }
+  STATE.turnWordsHistory.push({word:STATE.currentWord, dmg:totalPower, speed:speedMult});
+  hero.isActing = true;
+  hero.actVariant = skill.animVariant || 0;
+  hero.actStart = performance.now();
+  const target = getSelectedTarget();
+  const isCrit = speedMult>=2.2 && isPerfect;
+  if(target){
+    applyDamage(hero, target, totalPower, {isCrit, label:`-${totalPower}`, particleColor:"#fbbf24", particleCount:14});
+    if(STATE.wordModifier){
+      if(STATE.wordModifier.id==="FIRE" && target.hp>0) target.burnTurns = 2;
+      if(STATE.wordModifier.id==="FROST" && target.hp>0){
+        target.frozen = true;
+        target.intent = {type:"FROZEN",desc:"❄️ Membeku"};
+        AudioSys.playFreeze();
+      }
+      if(STATE.wordModifier.id==="LIGHTNING"){
+        AudioSys.playZap();
+        enemies.forEach(en=>{
+          if(en!==target && en.hp>0) applyDamage(hero,en,BALANCE.chainZapDamage,{label:`-${BALANCE.chainZapDamage} ⚡`,color:"#67e8f9",particleColor:"#38bdf8"});
+        });
+      }
+      if(STATE.wordModifier.id==="MANA") changeMp(hero, BALANCE.manaTileMp);
+      if(STATE.wordModifier.id==="SHIELD") STATE.partyGuardTurns = 1;
+    }
+    if(STATE.relics.some(r=>r.id==="quill") && STATE.currentWord.length>=5){
+      heroes.forEach(h=>{ if(h.hp>0) applyHealing(hero,h,BALANCE.quillHeal,{yOffset:140}); });
+      AudioSys.playHeal();
+    }
+  }
+  AudioSys.playSubmitSuccess(speedMult);
+  const feedback = speedMult>=3.0 ? "PERFECT!" : speedMult>=2.2 ? "CEPAT!" : speedMult>=1.6 ? "BAGUS" : "OK";
+  spawnDamageNumber(hero.x+70, hero.y-55, feedback, "#facc15", true);
+  if(STATE.turnWordStreak>1) spawnDamageNumber(hero.x-70, hero.y-55, `x${STATE.turnWordStreak}`, "#fbbf24");
+  advanceToNextWord();
+  if(enemies.every(e=>e.hp<=0)) finishHeroTypingTurn();
+}
+function skipCurrentWord(){
+  if(STATE.turnPhase!=="HERO_TYPING") return;
+  if(STATE.skipped){
+    spawnDamageNumber(canvas.width/2, 330, "SUDAH DI-SKIP!", "#f87171", true);
+    return;
+  }
+  STATE.skipped = true;
+  STATE.typedChars = STATE.currentWord.length;
+  spawnDamageNumber(canvas.width/2, 330, "SKIP KATA", "#fb923c", true);
+  AudioSys.playSelect(320);
+  completeWord();
+}
+function skipTurn(){
+  if(STATE.turnPhase!=="HERO_READY") return;
+  const actionId = beginAction();
+  const hero = heroes[STATE.activeHeroIndex];
+  changeMp(hero, BALANCE.skipMp);
+  STATE.rushGauge = Math.min(100, STATE.rushGauge + 6);
+  spawnDamageNumber(hero.x, hero.y-50, "BERTAHAN +9 MP", "#38bdf8");
+  STATE.turnPhase = "HERO_ACTION";
+  AudioSys.playSelect(300);
+  setTimeout(()=>{if(!isActionValid(actionId))return;advanceTurn();},500);
+}
+function triggerPartyRush(){
+  if(STATE.turnPhase!=="HERO_READY") return;
+  if(STATE.rushGauge<100){spawnDamageNumber(canvas.width/2,330,"METERAN BELUM PENUH!","#f87171");AudioSys.playSelect(220);return;}
+  const actionId=beginAction();
+  STATE.rushGauge=0;STATE.turnPhase="HERO_ACTION";
+  AudioSys.playSpecial();STATE.screenShake=18;STATE.hitFreezeTimer=70;
+  spawnDamageNumber(canvas.width/2,210,"⚡ ALL-OUT PARTY RUSH! ⚡","#facc15",true);
+  const alive=heroes.filter(h=>h.hp>0);
+  const target=getSelectedTarget();
+  if(!target||alive.length===0){STATE.projectileLedger={actionId:null,pending:0};finishPartyRush(actionId);return;}
+  STATE.projectileLedger={actionId,pending:alive.length};
+  alive.forEach((h,idx)=>{
+    h.isActing=true;h.actVariant=idx%2;h.actStart=performance.now()+idx*160;
+    setTimeout(()=>{
+      if(!isActionValid(actionId)||isCombatFinished()) return;
+      const tg=getSelectedTarget();
+      if(!tg){
+        STATE.projectileLedger.pending=Math.max(0,STATE.projectileLedger.pending-1);
+        if(STATE.projectileLedger.pending===0) finishPartyRush(actionId);
+        return;
+      }
+      createProjectile({
+        actionId,countPending:false,
+        x:h.x-20,y:h.y-10,targetX:tg.x,targetY:tg.y,
+        color:idx===0?"#f8fafc":idx===1?"#4ade80":idx===2?"#38bdf8":"#facc15",
+        trailColor:"#fbbf24",size:22,type:"rush",
+        onHit:()=>{
+          const fresh=(tg&&tg.hp>0)?tg:getSelectedTarget();
+          if(fresh) applyDamage(h,fresh,25+Math.floor(Math.random()*10),{color:"#facc15",particleColor:"#fbbf24",particleCount:18});
+        }
+      });
+    },idx*160);
+  });
+}
+function finishPartyRush(actionId){
+  if(!isActionValid(actionId)||isCombatFinished()) return;
+  heroes.forEach(h=>{if(h)h.isActing=false;});
+  setTimeout(()=>{if(!isActionValid(actionId)||isCombatFinished())return;advanceTurn();},400);
+}
+function resetGame(){
+  STATE.turnPhase="TITLE";
+  STATE.wave=1; STATE.rushGauge=0;
+  STATE.relics=[]; STATE.offeredRelics=[];
+  STATE.stats={wordsCount:0,bestWord:"-",bestWordDmg:0,totalDamageDealt:0,bestSpeed:0};
+  STATE.projectiles=[]; STATE.particles=[]; STATE.damageNumbers=[];
+  STATE.combo=0; STATE.maxCombo=0; STATE.wordsPerfect=0;
+  STATE.currentWord=""; STATE.typedChars=0;
+  heroes.forEach(h=>{h.hp=h.maxHp;h.mp=h.maxMp;h.x=h.baseX;h.isActing=false;h.stunned=false;h.frozen=false;h.burnTurns=0;h.poisonTurns=0;});
+  enemies=makeWave(1);
+}
+
+/* =========================================================
+   TURN FLOW
+   ========================================================= */
+function advanceTurn(){
+  const actionId=beginAction();
+  if(enemies.every(e=>e.hp<=0)){startWalkOutTransition();return;}
+  let nextIdx=STATE.activeHeroIndex+1;
+  while(nextIdx<heroes.length&&heroes[nextIdx].hp<=0) nextIdx++;
+  if(nextIdx<heroes.length){
+    STATE.activeHeroIndex=nextIdx;
+    STATE.selectedSkillIndex=0;
+    const ah=heroes[nextIdx];
+    if(ah.stunned){
+      ah.stunned=false;
+      spawnDamageNumber(ah.x,ah.y-55,"TERSTUN! GILIRAN LEWAT","#38bdf8");
+      setTimeout(()=>{if(!isActionValid(actionId))return;advanceTurn();},500);
+      return;
+    }
+    STATE.turnPhase="HERO_READY";
+    startWordQueue();
+  } else {
+    STATE.turnPhase="ENEMY_ACTION";
+    setTimeout(()=>{if(!isActionValid(actionId))return;executeEnemyTurns();},450);
+  }
+}
+function triggerCampfireIntermission(){
+  beginAction();
+  STATE.turnPhase="CAMPFIRE";
+  AudioSys.playCampfire();
+  const unowned=ALL_RELICS.filter(r=>!STATE.relics.some(ur=>ur.id===r.id));
+  const sh=unowned.sort(()=>Math.random()-0.5);
+  STATE.offeredRelics=sh.slice(0,3);
+}
+function handleCampfireClick(x,y){
+  if(STATE.turnPhase!=="CAMPFIRE") return;
+  if(!STATE.offeredRelics||STATE.offeredRelics.length===0) return;
+  const cardW=240,cardH=140;
+  const startX=(canvas.width-(STATE.offeredRelics.length*cardW+(STATE.offeredRelics.length-1)*20))/2;
+  const cardY=320;
+  for(let idx=0;idx<STATE.offeredRelics.length;idx++){
+    const relic=STATE.offeredRelics[idx];
+    const rx=startX+idx*(cardW+20);
+    if(x>=rx&&x<=rx+cardW&&y>=cardY&&y<=cardY+cardH){
+      STATE.relics.push(relic);
+      STATE.offeredRelics=[];
+      STATE.partyGuardTurns=0;
+      AudioSys.playSpecial();
+      heroes.forEach(h=>{if(h.hp>0){applyHealing(null,h,Math.round(h.maxHp*BALANCE.campfireHealPercent));changeMp(h,Math.round(h.maxMp*BALANCE.campfireHealPercent));}});
+      STATE.wave++;
+      enemies=makeWave(STATE.wave);
+      STATE.selectedEnemyIndex=0;
+      startWalkInTransition();
+      break;
+    }
+  }
+}
+function executeEnemyTurns(){
+  const actionId=beginAction();
+  const aliveEnemies=enemies.filter(e=>e.hp>0);
+  aliveEnemies.forEach(en=>{
+    if(en.burnTurns>0&&en.hp>0){applyDamage(null,en,BALANCE.burnDamage,{label:`-${BALANCE.burnDamage} (BURN)`,color:"#f97316",particleColor:"#f97316",particleCount:14,yOffset:55});en.burnTurns--;}
+    if(en.poisonTurns>0&&en.hp>0){applyDamage(null,en,10,{label:`-10 (RACUN)`,color:"#4ade80",particleColor:"#22c55e",particleCount:14,yOffset:65});en.poisonTurns--;}
+  });
+  if(enemies.every(e=>e.hp<=0)){advanceTurn();return;}
+  if(!isActionValid(actionId)||isCombatFinished()) return;
+  const attackers=enemies.filter(e=>e.hp>0);
+  if(attackers.length===0){finishEnemyPhase(actionId);return;}
+  let currIdx=0;
+  function step(){
+    if(!isActionValid(actionId)||isCombatFinished()) return;
+    if(currIdx>=attackers.length){finishEnemyPhase(actionId);return;}
+    const enemy=attackers[currIdx];currIdx++;
+    if(enemy.hp<=0){step();return;}
+    if(enemy.frozen){enemy.frozen=false;enemy.intent=null;spawnDamageNumber(enemy.x,enemy.y-45,"ES MENCAIR","#93c5fd");setTimeout(step,400);return;}
+    if(enemy.stunned){enemy.stunned=false;spawnDamageNumber(enemy.x,enemy.y-45,"STUN HILANG","#94a3b8");setTimeout(step,400);return;}
+    if(enemy.intent&&enemy.intent.type==="DOOM"){ENEMY_ACTION_HANDLERS.DOOM();setTimeout(step,500);return;}
+    const alive=heroes.filter(h=>h.hp>0);
+    if(alive.length===0){STATE.turnPhase="GAME_OVER";STATE.overSince=performance.now();beginAction();return;}
+    enemy.isActing=true;
+    enemy.actVariant=enemy.intent?enemy.intent.animVariant||0:0;
+    enemy.actStart=performance.now();
+    setTimeout(()=>{
+      if(!isActionValid(actionId)||enemy.hp<=0||isCombatFinished()){enemy.isActing=false;step();return;}
+      enemy.isActing=false;
+      const dmgVal=(enemy.intent&&enemy.intent.val)?enemy.intent.val:getEnemyAttackPower(STATE.wave,enemy.role==="Caster");
+      const tgts=heroes.filter(h=>h.hp>0);
+      if(tgts.length===0){STATE.turnPhase="GAME_OVER";STATE.overSince=performance.now();beginAction();return;}
+      const type=enemy.intent?enemy.intent.type:"ATTACK";
+      (ENEMY_ACTION_HANDLERS[type]||ENEMY_ACTION_HANDLERS.ATTACK)({enemy,damageVal:dmgVal,targetsAtHit:tgts,actionId});
+      if(heroes.every(h=>h.hp<=0)){STATE.turnPhase="GAME_OVER";STATE.overSince=performance.now();beginAction();return;}
+      setTimeout(step,450);
+    },250);
+  }
+  step();
+}
+function finishEnemyPhase(actionId){
+  if(!isActionValid(actionId)||isCombatFinished()) return;
+  STATE.partyGuardTurns=0;
+  const extraMp=STATE.relics.some(r=>r.id==="grail")?BALANCE.grailBonusMp:0;
+  heroes.forEach(h=>{if(h.hp>0) changeMp(h,BALANCE.turnMpRegen+extraMp);});
+  let firstAlive=heroes.findIndex(h=>h.hp>0);
+  if(firstAlive!==-1){
+    STATE.activeHeroIndex=firstAlive;
+    STATE.selectedSkillIndex=0;
+    refreshEnemyIntents();
+    const ah=heroes[firstAlive];
+    if(ah.stunned){
+      ah.stunned=false;
+      spawnDamageNumber(ah.x,ah.y-55,"TERSTUN! GILIRAN LEWAT","#38bdf8");
+      setTimeout(()=>{if(!isActionValid(actionId))return;advanceTurn();},500);
+      return;
+    }
+    STATE.turnPhase="HERO_READY";
+    startWordQueue();
+  } else {
+    STATE.turnPhase="GAME_OVER";
+    STATE.overSince=performance.now();
+    beginAction();
+  }
+}
+
+/* =========================================================
+   SKILL & ENEMY ACTION HANDLERS
+   ========================================================= */
+const SKILL_HANDLERS={
+  SINGLE_ATTACK:(c)=>{},
+  AOE_ATTACK:(c)=>{},
+  SMITE_HEAL:(c)=>{},
+  AOE_HEAL:(c)=>{}
+};
+
+const ENEMY_ACTION_HANDLERS={
+  ATTACK:({enemy,damageVal,targetsAtHit})=>{
+    const target=targetsAtHit[Math.floor(Math.random()*targetsAtHit.length)];
+    AudioSys.playSlash();
+    applyDamage(enemy,target,damageVal,{label:STATE.partyGuardTurns>0?`-${Math.round(damageVal*BALANCE.guardMultiplier)} (G)`:`-${damageVal}`,color:STATE.partyGuardTurns>0?"#facc15":"#ef4444",particleColor:"#ef4444"});
+  },
+  STUN_ATTACK:({enemy,damageVal,targetsAtHit})=>{
+    const target=targetsAtHit[Math.floor(Math.random()*targetsAtHit.length)];
+    AudioSys.playSlash();
+    const a=applyDamage(enemy,target,damageVal,{label:`-${damageVal}`,color:"#ef4444",particleColor:"#ef4444"});
+    if(a>0&&target.hp>0){target.stunned=true;spawnDamageNumber(target.x,target.y-60,"PUSING!","#38bdf8");}
+  },
+  MAGIC_AOE:({enemy,damageVal,targetsAtHit,actionId})=>{
+    AudioSys.playMagic();
+    for(const h of targetsAtHit){
+      if(!isActionValid(actionId)||isCombatFinished()||h.hp<=0) break;
+      applyDamage(enemy,h,damageVal,{label:`-${damageVal} (MAGIC)`,color:"#c084fc",particleColor:"#a855f7"});
+    }
+  },
+  POISON_SPIT:({enemy})=>{
+    AudioSys.playMagic();
+    spawnDamageNumber(enemy.x,enemy.y-40,"SEMBURAN RACUN!","#a855f7");
+  },
+  DOOM:()=>{
+    AudioSys.playExplode();
+    STATE.screenShake=16;
+    const alive=heroes.filter(h=>h.hp>0);
+    if(alive.length>0){
+      const rh=alive[Math.floor(Math.random()*alive.length)];
+      applyDamage(null,rh,BALANCE.doomDamage,{color:"#ef4444",particleColor:"#f97316",particleCount:30,yOffset:70});
+    }
+  }
+};
+
+/* =========================================================
+   DRAWING — CHARACTER
+   ========================================================= */
+function drawCharacterSprite(entity,isCurrentTurn,isTargeted,isWalking=false){
+  const now=performance.now();
+  const isDead=entity.hp<=0;
+  if(entity.hurtTimer>0) entity.hurtTimer=Math.max(0,entity.hurtTimer-16);
+  const drawX=entity.x+(entity.animOffset||0);
+  const drawY=entity.y;
+  let stateName;
+  if(isDead) stateName="dead";
+  else if(entity.hurtTimer>140) stateName="hurt";
+  else if(entity.isActing) stateName=(entity.actVariant===1)?"act2":"act1";
+  else if(isWalking) stateName="walk";
+  else stateName="idle";
+  let frameIdx=0;
+  let variant=entity.actVariant||0;
+  if(stateName==="idle") frameIdx=Math.floor(now/280)%4;
+  else if(stateName==="walk") frameIdx=Math.floor(now/110)%6;
+  else if(stateName==="hurt") frameIdx=Math.floor(now/100)%2;
+  else if(stateName==="act1"||stateName==="act2"){const el=now-(entity.actStart||now);frameIdx=Math.min(4,Math.floor(el/90));}
+  let spriteKey;
+  if(stateName==="act1"||stateName==="act2") spriteKey=`${entity.spriteKey}_${stateName}_${variant}_${frameIdx}`;
+  else if(stateName==="dead") spriteKey=`${entity.spriteKey}_hurt_1`;
+  else spriteKey=`${entity.spriteKey}_${stateName}_${frameIdx}`;
+  let spriteCanvas=SpriteLibrary.sprites[spriteKey]||SpriteLibrary.sprites[`${entity.spriteKey}_idle_0`];
+  const flashCanvas=SpriteLibrary.flashes[spriteKey]||SpriteLibrary.flashes[`${entity.spriteKey}_idle_0`];
+  ctx.save();
+  let deathProgress=0;
+  if(isDead){
+    deathProgress=Math.min(1,(now-(entity.deathTime||now))/600);
+    if(!entity.deathTime) deathProgress=1;
+    ctx.translate(drawX,drawY+50);
+    ctx.rotate((entity.isHero?-1:1)*deathProgress*Math.PI*0.42);
+    ctx.translate(-drawX,-(drawY+50));
+    ctx.globalAlpha=1-deathProgress*0.55;
+  }
+  let lunge=0;
+  if(stateName==="act1"||stateName==="act2"){
+    const isAct2=stateName==="act2";
+    const facing=entity.isHero?-1:1;
+    const lungePattern=isAct2?[-2,3,-14,-10,-3]:[-3,4,-12,-8,-2];
+    lunge=(lungePattern[frameIdx]||0)*facing*1.2;
+  } else if(stateName==="hurt"){lunge=(entity.isHero?1:-1)*6;}
+  const finalX=drawX+lunge;
+  if(isCurrentTurn&&!isDead&&!isWalking){
+    const pulse=Math.sin(now*0.006)*3;
+    ctx.strokeStyle="#f59e0b";ctx.lineWidth=3;
+    ctx.fillStyle="rgba(245,158,11,0.20)";
+    ctx.beginPath();ctx.ellipse(finalX,drawY+50,40+pulse*0.5,13,0,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#f59e0b";
+    const bob=Math.sin(now*0.008)*3;
+    ctx.beginPath();ctx.moveTo(finalX,drawY-66+bob);ctx.lineTo(finalX-9,drawY-82+bob);ctx.lineTo(finalX+9,drawY-82+bob);ctx.closePath();ctx.fill();
+  }
+  if(isTargeted&&!entity.isHero&&!isDead){
+    const pulse=Math.sin(now*0.007)*2.5;
+    ctx.strokeStyle="#ef4444";ctx.lineWidth=2.5;
+    ctx.fillStyle="rgba(239,68,68,0.22)";
+    ctx.beginPath();ctx.ellipse(finalX,drawY+50,40,13,0,0,Math.PI*2);ctx.fill();ctx.stroke();
+    const bD=40+pulse,bL=10;
+    ctx.strokeStyle="#ef4444";ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(finalX-bD,drawY-bD+bL);ctx.lineTo(finalX-bD,drawY-bD);ctx.lineTo(finalX-bD+bL,drawY-bD);
+    ctx.moveTo(finalX+bD-bL,drawY-bD);ctx.lineTo(finalX+bD,drawY-bD);ctx.lineTo(finalX+bD,drawY-bD+bL);
+    ctx.moveTo(finalX-bD,drawY+bD-bL);ctx.lineTo(finalX-bD,drawY+bD);ctx.lineTo(finalX-bD+bL,drawY+bD);
+    ctx.moveTo(finalX+bD-bL,drawY+bD);ctx.lineTo(finalX+bD,drawY+bD);ctx.lineTo(finalX+bD,drawY+bD-bL);
+    ctx.stroke();
+    const hasIntent=entity.intent&&STATE.turnPhase==="HERO_READY";
+    const badgeY=drawY-(hasIntent?110:90)+pulse;
+    ctx.fillStyle="rgba(153,27,27,0.95)";ctx.strokeStyle="#f87171";ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.roundRect(finalX-38,badgeY-14,76,17,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#ffffff";ctx.font="bold 10px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("🎯 TARGET",finalX,badgeY-5);
+  }
+  if(STATE.partyGuardTurns>0 && entity.isHero && !isDead){
+    ctx.strokeStyle="rgba(250,204,21,0.75)";ctx.lineWidth=2.5;
+    ctx.beginPath();ctx.arc(finalX,drawY+6,48,0,Math.PI*2);ctx.stroke();
+  }
+  if(spriteCanvas){
+    const sw=SPRITE_SIZE*SPRITE_SCALE;
+    const sh=SPRITE_SIZE*SPRITE_SCALE;
+    const px=Math.floor(finalX-sw/2);
+    const py=Math.floor(drawY-sh/2);
+    if(!isDead){
+      ctx.fillStyle="rgba(0,0,0,0.30)";
+      ctx.beginPath();ctx.ellipse(finalX,drawY+50,32,8,0,0,Math.PI*2);ctx.fill();
+    }
+    ctx.drawImage(spriteCanvas,0,0,SPRITE_SIZE,SPRITE_SIZE,px,py,sw,sh);
+    if(stateName==="hurt" && entity.hurtTimer>140 && flashCanvas){
+      ctx.globalAlpha=0.75;
+      ctx.drawImage(flashCanvas,0,0,SPRITE_SIZE,SPRITE_SIZE,px,py,sw,sh);
+      ctx.globalAlpha=1;
+    }
+  }
+  if(!isWalking && !isDead){
+    const barW=66,barH=7;
+    const barX=finalX-barW/2;
+    const barY=drawY+60;
+    ctx.fillStyle="rgba(0,0,0,0.82)";
+    ctx.fillRect(barX-1,barY-1,barW+2,barH+2);
+    const hpPct=Math.max(0,entity.hp/entity.maxHp);
+    ctx.fillStyle=entity.isHero?"#22c55e":"#ef4444";
+    ctx.fillRect(barX,barY,barW*hpPct,barH);
+    ctx.fillStyle="rgba(255,255,255,0.25)";
+    ctx.fillRect(barX,barY,barW*hpPct,2);
+    if(entity.isHero){
+      const mpPct=Math.max(0,entity.mp/entity.maxMp);
+      ctx.fillStyle="rgba(0,0,0,0.82)";
+      ctx.fillRect(barX-1,barY+8,barW+2,4);
+      ctx.fillStyle="#38bdf8";
+      ctx.fillRect(barX,barY+9,barW*mpPct,3);
+    }
+    ctx.fillStyle="#f8fafc";ctx.font="bold 11px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(entity.name,finalX,barY-8);
+    ctx.font="bold 9px monospace";ctx.fillStyle="#cbd5e1";
+    ctx.fillText(`${entity.hp}/${entity.maxHp}`,finalX,barY+22);
+    if(!entity.isHero && !isDead && entity.intent && STATE.turnPhase==="HERO_READY"){
+      ctx.fillStyle="rgba(15,23,42,0.92)";ctx.strokeStyle="#f59e0b";ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.roundRect(finalX-52,drawY-78,104,22,5);ctx.fill();ctx.stroke();
+      ctx.fillStyle=entity.intent.type==="MAGIC_AOE"?"#c084fc":entity.intent.type==="DOOM"?"#f97316":entity.intent.type==="STUN_ATTACK"?"#38bdf8":entity.intent.type==="FROZEN"?"#93c5fd":"#f87171";
+      ctx.font="bold 11px monospace";
+      ctx.fillText(entity.intent.desc,finalX,drawY-63);
+    }
+  }
+  if(entity.frozen && !isDead){ctx.fillStyle="#93c5fd";ctx.font="bold 13px monospace";ctx.textAlign="center";ctx.fillText("❄️ BEKU",finalX,drawY-38);}
+  else if(entity.stunned && !isDead){ctx.fillStyle="#38bdf8";ctx.font="bold 13px monospace";ctx.textAlign="center";ctx.fillText("💫 STUN",finalX,drawY-38);}
+  if(entity.burnTurns>0 && !isDead){ctx.fillStyle="#f97316";ctx.font="bold 12px monospace";ctx.textAlign="center";ctx.fillText(`🔥${entity.burnTurns}`,finalX+38,drawY-28);}
+  if(entity.poisonTurns>0 && !isDead){ctx.fillStyle="#4ade80";ctx.font="bold 12px monospace";ctx.textAlign="center";ctx.fillText(`☠️${entity.poisonTurns}`,finalX-38,drawY-28);}
+  ctx.restore();
+}
+
+/* =========================================================
+   DRAWING — BACKGROUND, PARTICLES, PROJECTILES
+   ========================================================= */
+function drawDungeonBackground(){
+  ctx.fillStyle="#0c0f1c";
+  ctx.fillRect(0,0,canvas.width,240);
+  const blockW=60,blockH=30;
+  for(let y=0;y<240;y+=blockH){
+    const off=(y/blockH)%2===0?0:blockW/2;
+    for(let x=-blockW;x<canvas.width+blockW;x+=blockW){
+      const bx=x+off;
+      const shade=((Math.floor(x/blockW)+Math.floor(y/blockH))%3);
+      const colors=["#181d2e","#151a29","#1a2035"];
+      ctx.fillStyle=colors[shade];
+      ctx.fillRect(bx,y,blockW-2,blockH-2);
+      ctx.fillStyle="rgba(80,95,140,0.18)";
+      ctx.fillRect(bx,y,blockW-2,1);
+      ctx.fillStyle="rgba(0,0,0,0.35)";
+      ctx.fillRect(bx,y+blockH-3,blockW-2,1);
+    }
+  }
+  const mist=ctx.createLinearGradient(0,0,0,240);
+  mist.addColorStop(0,"rgba(80,100,160,0.06)");
+  mist.addColorStop(0.6,"rgba(40,50,90,0.10)");
+  mist.addColorStop(1,"rgba(10,15,25,0)");
+  ctx.fillStyle=mist;ctx.fillRect(0,0,canvas.width,240);
+  const torchTime=Date.now()*0.007;
+  [120,480,840].forEach(tx=>{
+    ctx.fillStyle="#1f1410";ctx.fillRect(tx-5,100,10,4);
+    ctx.fillStyle="#3e2723";ctx.fillRect(tx-4,104,8,24);
+    const f1=14+Math.sin(torchTime+tx)*3;
+    const f2=10+Math.cos(torchTime*1.3+tx)*2;
+    const grad1=ctx.createRadialGradient(tx,96,2,tx,96,f1*3);
+    grad1.addColorStop(0,"rgba(255,240,180,0.95)");
+    grad1.addColorStop(0.3,"rgba(255,180,50,0.65)");
+    grad1.addColorStop(0.7,"rgba(240,90,20,0.25)");
+    grad1.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=grad1;
+    ctx.beginPath();ctx.arc(tx,96,f1*3,0,Math.PI*2);ctx.fill();
+    const grad2=ctx.createRadialGradient(tx,94,1,tx,94,f2*2);
+    grad2.addColorStop(0,"rgba(255,255,255,1)");
+    grad2.addColorStop(0.4,"rgba(255,245,180,0.85)");
+    grad2.addColorStop(1,"rgba(255,180,50,0)");
+    ctx.fillStyle=grad2;
+    ctx.beginPath();ctx.arc(tx,94,f2*2,0,Math.PI*2);ctx.fill();
+  });
+  ctx.fillStyle="#0a0c14";
+  ctx.fillRect(0,240,canvas.width,100);
+  ctx.strokeStyle="#161a2b";ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,240);ctx.lineTo(canvas.width,240);ctx.stroke();
+  ctx.fillStyle="#07080f";
+  ctx.fillRect(0,340,canvas.width,310);
+  ctx.strokeStyle="#1e293b";ctx.lineWidth=3;
+  ctx.strokeRect(0,340,canvas.width,310);
+  const t=Date.now()*0.0003;
+  ctx.fillStyle="rgba(180,190,220,0.25)";
+  for(let i=0;i<14;i++){
+    const px=(i*137+t*60)%canvas.width;
+    const py=100+Math.sin(t*3+i*1.3)*80+((i*53)%140);
+    if(py<340) ctx.fillRect(px,py,1,1);
+  }
+}
+function spawnDamageNumber(x,y,text,color,slow){
+  STATE.damageNumbers.push({x,y,text,color,life:1.0,vy:slow?-0.25:-1.8,decay:slow?0.007:0.02,scale:0.5,scaleT:0});
+}
+function spawnParticles(x,y,color,count=15){
+  for(let i=0;i<count;i++){
+    const a=Math.random()*Math.PI*2;
+    const s=1.2+Math.random()*4.5;
+    STATE.particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,color,life:1.0,size:3+Math.random()*3});
+  }
+  while(STATE.particles.length>BALANCE.maxParticles) STATE.particles.shift();
+}
+function updateAndDrawProjectiles(){
+  for(let i=STATE.projectiles.length-1;i>=0;i--){
+    const p=STATE.projectiles[i];
+    const dx=p.targetX-p.x,dy=p.targetY-p.y;
+    const dist=Math.hypot(dx,dy)||1;
+    const ang=Math.atan2(dy,dx);
+    if(dist<22){STATE.projectiles.splice(i,1);resolveProjectile(p);continue;}
+    p.x+=(dx/dist)*28;p.y+=(dy/dist)*28;
+    p.angle=ang;p.life++;
+    if(!p.trail) p.trail=[];
+    p.trail.push({x:p.x,y:p.y,life:1});
+    if(p.trail.length>12) p.trail.shift();
+    ctx.save();
+    for(let ti=0;ti<p.trail.length;ti++){
+      const t=p.trail[ti];t.life-=0.08;
+      const a=Math.max(0,t.life)*(ti/p.trail.length)*0.6;
+      if(a<=0) continue;
+      ctx.globalAlpha=a;ctx.fillStyle=p.trailColor;
+      ctx.beginPath();ctx.arc(t.x,t.y,(p.size*0.4)*(ti/p.trail.length),0,Math.PI*2);ctx.fill();
+    }
+    ctx.restore();
+    ctx.save();
+    ctx.translate(p.x,p.y);ctx.rotate(p.angle);
+    ctx.shadowColor=p.trailColor;ctx.shadowBlur=20;
+    ctx.fillStyle=p.color;
+    switch(p.type){
+      case "arrow":{ctx.fillRect(-p.size*0.7,-2,p.size*1.4,4);ctx.beginPath();ctx.moveTo(p.size*0.65,-7);ctx.lineTo(p.size*1.15,0);ctx.lineTo(p.size*0.65,7);ctx.closePath();ctx.fill();break;}
+      case "lightning":{ctx.shadowBlur=26;ctx.strokeStyle=p.color;ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(-16,0);ctx.lineTo(-6,-8);ctx.lineTo(0,3);ctx.lineTo(6,-7);ctx.lineTo(16,0);ctx.stroke();ctx.strokeStyle="#ffffff";ctx.lineWidth=1.6;ctx.stroke();break;}
+      case "fireball":{const r=p.size*0.7;const g=ctx.createRadialGradient(0,0,0,0,0,r);g.addColorStop(0,"#fff7cc");g.addColorStop(0.4,p.color);g.addColorStop(0.8,"#dc2626");g.addColorStop(1,"rgba(239,68,68,0)");ctx.fillStyle=g;ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fill();break;}
+      case "shield":{ctx.fillStyle=p.color;ctx.beginPath();ctx.moveTo(0,-p.size*0.6);ctx.lineTo(p.size*0.55,0);ctx.lineTo(0,p.size*0.6);ctx.lineTo(-p.size*0.55,0);ctx.closePath();ctx.fill();ctx.fillStyle="#eab308";ctx.fillRect(-1,-p.size*0.4,2,p.size*0.8);ctx.fillRect(-p.size*0.3,-1,p.size*0.6,2);break;}
+      case "smite":{ctx.fillStyle=p.color;ctx.fillRect(-2.5,-p.size*0.65,5,p.size*1.3);ctx.fillRect(-p.size*0.55,-4,p.size*1.1,8);break;}
+      case "rush":{const r=p.size*0.6;const g=ctx.createRadialGradient(0,0,0,0,0,r);g.addColorStop(0,"#ffffff");g.addColorStop(0.4,p.color);g.addColorStop(1,"rgba(255,255,255,0)");ctx.fillStyle=g;ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fill();break;}
+      default:{ctx.beginPath();ctx.arc(0,0,p.size*0.75,-1.1,1.1);ctx.lineWidth=6;ctx.strokeStyle=p.color;ctx.stroke();ctx.beginPath();ctx.arc(0,0,p.size*0.75,-0.75,0.75);ctx.lineWidth=2;ctx.strokeStyle="#ffffff";ctx.stroke();}
+    }
+    ctx.restore();
+  }
+}
+
+/* =========================================================
+   TYPING UI — 3 FASE
+   ========================================================= */
+function drawTypingPanel(){
+  const hero = heroes[STATE.activeHeroIndex];
+  const skills = HERO_SKILLS[STATE.activeHeroIndex];
+
+  // Panel kiri
+  ctx.fillStyle="#0c101d";ctx.strokeStyle="#1e293b";ctx.lineWidth=2;
+  ctx.beginPath();ctx.roundRect(20,360,440,275,8);ctx.fill();ctx.stroke();
+
+  // ══ FASE 1: HERO_READY ══
+  if(STATE.turnPhase==="HERO_READY"){
+    ctx.fillStyle="#f59e0b";ctx.font="bold 16px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("🎯 PILIH SKILL, LALU MULAI", 240, 390);
+    // Info sesi
+    ctx.fillStyle="#94a3b8";ctx.font="11px monospace";
+    ctx.fillText(`Sesi: ${STATE.turnTimeLimit/1000} detik — ketik sebanyak mungkin!`, 240, 415);
+    // Preview kata pertama
+    ctx.fillStyle="#64748b";ctx.font="10px monospace";
+    ctx.fillText("Kata pertama:", 240, 445);
+    ctx.fillStyle="#facc15";ctx.font="bold 28px monospace";
+    ctx.fillText(STATE.currentWord || "...", 240, 480);
+    // Hint shortcuts
+    ctx.fillStyle="#475569";ctx.font="10px monospace";
+    ctx.fillText("[1]/[2] Skill  •  [Tab] Bertahan +9 MP  •  [U] Party Rush", 240, 522);
+    // Tombol MULAI besar
+    const pulse = Math.sin(performance.now()*0.005)*2;
+    ctx.fillStyle="#15803d";ctx.strokeStyle="#4ade80";ctx.lineWidth=3;
+    ctx.beginPath();ctx.roundRect(36, 620+pulse, 408, 26, 6);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#ffffff";ctx.font="bold 15px monospace";ctx.textAlign="center";
+    ctx.fillText("▶ MULAI SESI KETIK  [ENTER]", 240, 634+pulse);
+  }
+
+  // ══ FASE 2: HERO_TYPING ══
+  else if(STATE.turnPhase==="HERO_TYPING"){
+    const remain = Math.max(0, 1 - STATE.turnElapsed/STATE.turnTimeLimit);
+    const remainSec = Math.max(0, (STATE.turnTimeLimit - STATE.turnElapsed)/1000).toFixed(1);
+    const barW = 400, barH = 24, barX = 40, barY = 380;
+    ctx.fillStyle="rgba(0,0,0,0.7)";
+    ctx.beginPath();ctx.roundRect(barX-1,barY-1,barW+2,barH+2,6);ctx.fill();
+    let col = "#22c55e";
+    if(remain<0.3) col="#ef4444";
+    else if(remain<0.6) col="#facc15";
+    ctx.fillStyle=col;
+    ctx.beginPath();ctx.roundRect(barX,barY,barW*remain,barH,5);ctx.fill();
+    ctx.fillStyle="#ffffff";ctx.font="bold 22px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(`⏱ ${remainSec}s`, barX+barW/2, barY+barH/2);
+    // Kata besar
+    if(STATE.currentWord){
+      const word = STATE.currentWord;
+      const cx = 240, cy = 460;
+      ctx.font="bold 42px 'Courier New', monospace";
+      ctx.textAlign="left";ctx.textBaseline="middle";
+      const charWidths = word.split("").map(ch=>ctx.measureText(ch).width);
+      const totalW = charWidths.reduce((a,b)=>a+b,0);
+      let x = cx - totalW/2;
+      for(let i=0;i<word.length;i++){
+        const typed = i<STATE.typedChars;
+        const isCurrent = i===STATE.typedChars;
+        if(typed){ ctx.fillStyle="#22c55e"; ctx.shadowColor="#22c55e"; ctx.shadowBlur=8; }
+        else if(isCurrent){
+          const blink = Math.sin(performance.now()*0.01)>0;
+          ctx.fillStyle = blink?"#facc15":"#fbbf24";
+          ctx.shadowColor="#facc15"; ctx.shadowBlur=14;
+        } else { ctx.fillStyle="#f1f5f9"; ctx.shadowBlur=0; }
+        ctx.fillText(word[i], x, cy);
+        if(isCurrent){
+          ctx.shadowBlur=0; ctx.fillStyle="#facc15";
+          ctx.fillRect(x-2, cy+18, charWidths[i]+2, 3);
+        }
+        x += charWidths[i];
+      }
+      ctx.shadowBlur=0;
+      if(STATE.wordModifier){
+        ctx.fillStyle=STATE.wordModifier.color;
+        ctx.font="bold 18px monospace";ctx.textAlign="right";
+        ctx.fillText(STATE.wordModifier.icon + " " + STATE.wordModifier.id, 440, 460);
+      } else if(STATE.wordThemeMatch){
+        ctx.fillStyle="#facc15";ctx.font="bold 13px monospace";ctx.textAlign="right";
+        ctx.fillText("★ TEMA", 440, 460);
+      }
+    }
+    // Statistik live
+    ctx.textAlign="left";ctx.textBaseline="middle";
+    ctx.fillStyle="#facc15";ctx.font="bold 13px monospace";
+    ctx.fillText(`✓ Kata: ${STATE.turnWordsTyped}`, 40, 505);
+    ctx.fillStyle="#f97316";
+    ctx.fillText(`💥 Total: ${STATE.turnDamageTotal}`, 200, 505);
+    ctx.fillStyle="#fbbf24";
+    ctx.fillText(`🔥 Streak: ${STATE.turnWordStreak}`, 360, 505);
+    // Berikutnya
+    ctx.fillStyle="#64748b";ctx.font="bold 11px monospace";
+    ctx.fillText("Berikutnya:", 40, 540);
+    ctx.font="bold 13px monospace";
+    let x = 130;
+    STATE.wordQueue.slice(0,4).forEach((w,i)=>{
+      ctx.fillStyle=i===0?"#94a3b8":"#475569";
+      ctx.fillText(w, x, 540);
+      x += ctx.measureText(w).width + 18;
+    });
+    // Hint
+    ctx.fillStyle="#475569";ctx.font="10px monospace";
+    ctx.fillText("[A-Z] Ketik  •  [R] Skip kata  •  [Enter] Hentikan sesi", 40, 580);
+    // Skip marker
+    if(STATE.skipped){
+      ctx.fillStyle="#fb923c";ctx.font="bold 12px monospace";ctx.textAlign="center";
+      ctx.fillText("KATA DI-SKIP", 240, 610);
+    }
+  }
+
+  // ══ FASE 3: HERO_TURN_END ══
+  else if(STATE.turnPhase==="HERO_TURN_END"){
+    ctx.fillStyle="#facc15";ctx.font="bold 18px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("📊 RINGKASAN SESI KETIK", 240, 390);
+    ctx.fillStyle="#0a0e1a";ctx.strokeStyle="#1e293b";ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.roundRect(50, 415, 380, 130, 6);ctx.fill();ctx.stroke();
+    ctx.textAlign="left";ctx.fillStyle="#e2e8f0";ctx.font="bold 13px monospace";
+    ctx.fillText(`Kata berhasil:  ${STATE.turnWordsTyped}`, 70, 440);
+    ctx.fillText(`Total damage:   ${STATE.turnDamageTotal}`, 70, 465);
+    ctx.fillText(`Best word:      ${STATE.turnBestWord || "-"} (${STATE.turnBestDamage})`, 70, 490);
+    ctx.fillText(`Max streak:     x${STATE.turnMaxStreak}`, 70, 515);
+    ctx.fillStyle="#64748b";ctx.font="10px monospace";
+    const hist = STATE.turnWordsHistory.slice(-3).map(h=>`${h.word}(${h.dmg})`).join(" • ");
+    ctx.fillText(`Terakhir: ${hist || "-"}`, 70, 535);
+    const pulse = Math.sin(performance.now()*0.005)*2;
+    ctx.fillStyle="#15803d";ctx.strokeStyle="#4ade80";ctx.lineWidth=3;
+    ctx.beginPath();ctx.roundRect(340, 560+pulse, 300, 50, 8);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#ffffff";ctx.font="bold 18px monospace";ctx.textAlign="center";
+    ctx.fillText("▶ LANJUT  [ENTER]", 490, 585+pulse);
+  }
+
+  // Panel kanan (skill & stats) — tetap
+  ctx.fillStyle="#0c101d";ctx.strokeStyle="#1e293b";ctx.lineWidth=2;
+  ctx.beginPath();ctx.roundRect(475,360,490,275,8);ctx.fill();ctx.stroke();
+  ctx.textAlign="left";ctx.fillStyle="#f59e0b";ctx.font="bold 15px monospace";ctx.textBaseline="middle";
+  ctx.fillText(`GILIRAN: ${hero.name.toUpperCase()} (${hero.role})`, 490, 385);
+  ctx.fillStyle="#94a3b8";ctx.font="12px monospace";
+  ctx.fillText(`HP: ${hero.hp}/${hero.maxHp}  |  MP: ${hero.mp}/${hero.maxMp}`, 490, 405);
+  const SKILL_BTNS=[{x:485,y:450,w:230,h:64},{x:725,y:450,w:230,h:64}];
+  skills.forEach((sk,idx)=>{
+    const btn=SKILL_BTNS[idx];
+    const isSel = STATE.selectedSkillIndex===idx;
+    ctx.fillStyle=isSel?"#1e3a8a":"#1e293b";
+    ctx.strokeStyle=isSel?"#60a5fa":"#334155";
+    ctx.lineWidth=isSel?2.5:1.5;
+    ctx.beginPath();ctx.roundRect(btn.x,btn.y,btn.w,btn.h,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=isSel?"#ffffff":"#e2e8f0";ctx.font="bold 13px monospace";
+    ctx.fillText(`[${idx+1}] ${sk.name}`, btn.x+12, btn.y+24);
+    ctx.fillStyle=hero.mp>=sk.mpCost?"#38bdf8":"#ef4444";ctx.font="11px monospace";
+    ctx.fillText(`MP: ${sk.mpCost}`, btn.x+12, btn.y+46);
+    ctx.fillStyle="#facc15";ctx.textAlign="right";
+    ctx.fillText(`Pwr: ${sk.basePower}`, btn.x+btn.w-12, btn.y+24);
+    ctx.textAlign="left";
+  });
+  const curSkill=skills[STATE.selectedSkillIndex];
+  ctx.fillStyle="#38bdf8";ctx.font="italic 12px monospace";
+  ctx.fillText(`* ${curSkill.desc}`, 490, 545);
+  ctx.fillStyle="#94a3b8";ctx.font="11px monospace";ctx.textAlign="right";
+  ctx.fillText(`RUANG: ${STATE.wave}/${WAVES.length}`, 955, 385);
+  ctx.fillStyle="#64748b";ctx.font="10px monospace";ctx.textAlign="left";
+  ctx.fillText(`Combo max: ${STATE.maxCombo}  •  Perfect: ${STATE.wordsPerfect}`, 490, 580);
+  ctx.fillText(`Best speed: ${STATE.stats.bestSpeed.toFixed(1)} huruf/detik`, 490, 598);
+  ctx.fillText(`Kata terkuat: ${STATE.stats.bestWord} (${STATE.stats.bestWordDmg} dmg)`, 490, 616);
+}
+
+/* =========================================================
+   TITLE, CAMPFIRE, GAMEOVER
+   ========================================================= */
+function drawTitleScreen(){
+  ctx.fillStyle="#070913";ctx.fillRect(0,0,canvas.width,canvas.height);
+  const t=Date.now()*0.003;
+  const grad=ctx.createRadialGradient(canvas.width/2,170,20,canvas.width/2,170,360);
+  grad.addColorStop(0,"rgba(99,102,241,0.28)");
+  grad.addColorStop(0.5,"rgba(79,70,229,0.08)");
+  grad.addColorStop(1,"rgba(0,0,0,0)");
+  ctx.fillStyle=grad;ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle="#1e293b";ctx.lineWidth=4;ctx.strokeRect(40,30,canvas.width-80,canvas.height-60);
+  ctx.fillStyle="#4f46e5";
+  [[40,30],[canvas.width-48,30],[40,canvas.height-38],[canvas.width-48,canvas.height-38]].forEach(([cx,cy])=>{ctx.fillRect(cx,cy,8,8);});
+  ctx.textAlign="center";ctx.textBaseline="middle";
+  ctx.fillStyle="#38bdf8";ctx.font="bold 13px monospace";
+  ctx.fillText("⌨️ TYPING RPG ADVENTURE ⌨️", canvas.width/2, 95);
+  const pulse=Math.sin(t*3)*3;
+  ctx.fillStyle="#f8fafc";ctx.shadowColor="#6366f1";ctx.shadowBlur=18+pulse;
+  ctx.font="bold 44px 'Courier New', monospace";
+  ctx.fillText("SPELLBLADE",canvas.width/2,145);
+  ctx.shadowBlur=0;
+  ctx.fillStyle="#facc15";ctx.font="bold 22px 'Courier New', monospace";
+  ctx.fillText("TYPING DUNGEON PARTY",canvas.width/2,190);
+  ctx.fillStyle="#94a3b8";ctx.font="bold 12px monospace";
+  ctx.fillText("TURN-BASED TYPING EDITION",canvas.width/2,218);
+  const slots=[
+    {key:"warrior",label:"Ksatria",desc:"Fisik & Stun",x:canvas.width/2-180},
+    {key:"ranger",label:"Pemanah",desc:"Racun & Panah",x:canvas.width/2-60},
+    {key:"mage",label:"Penyihir",desc:"AoE & Petir",x:canvas.width/2+60},
+    {key:"cleric",label:"Tabib",desc:"Heal & Doa",x:canvas.width/2+180}
+  ];
+  slots.forEach(s=>{
+    const idleF=Math.floor(STATE.animTimer/300)%4;
+    const spr=SpriteLibrary.sprites[`${s.key}_idle_${idleF}`];
+    if(spr){
+      const sz=SPRITE_SIZE*SPRITE_SCALE*0.82;
+      ctx.drawImage(spr,0,0,SPRITE_SIZE,SPRITE_SIZE,s.x-sz/2,270,sz,sz);
+    }
+    ctx.fillStyle="#f8fafc";ctx.font="bold 11px monospace";ctx.fillText(s.label,s.x,355);
+    ctx.fillStyle="#94a3b8";ctx.font="9px monospace";ctx.fillText(s.desc,s.x,370);
+  });
+  const bhp=Math.sin(t*5)*2;
+  ctx.fillStyle="#15803d";ctx.strokeStyle="#4ade80";ctx.lineWidth=2.5;
+  ctx.beginPath();ctx.roundRect(BTN_TITLE_START.x,BTN_TITLE_START.y+bhp,BTN_TITLE_START.w,BTN_TITLE_START.h,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle="#ffffff";ctx.font="bold 18px monospace";
+  ctx.fillText("MULAI PETUALANGAN [↵]", canvas.width/2, BTN_TITLE_START.y+bhp+28);
+  ctx.fillStyle="#64748b";ctx.font="11px monospace";
+  ctx.fillText("Setiap hero punya sesi mengetik 10 detik. Ketik sebanyak mungkin!", canvas.width/2, 530);
+  ctx.fillText("Semakin cepat + akurat, semakin besar damage ke musuh.", canvas.width/2, 550);
+  ctx.fillStyle=AudioSys.bgmPlaying?"#1e3a8a":"#1e293b";
+  ctx.strokeStyle=AudioSys.bgmPlaying?"#60a5fa":"#475569";ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.roundRect(BTN_BGM.x,BTN_BGM.y,BTN_BGM.w,BTN_BGM.h,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle="#f8fafc";ctx.font="bold 11px monospace";
+  ctx.fillText(AudioSys.bgmPlaying?"🎵 BGM: ON":"🔇 BGM: OFF", BTN_BGM.x+BTN_BGM.w/2, BTN_BGM.y+BTN_BGM.h/2);
+  ctx.fillStyle=STATE.crtEnabled?"#14532d":"#1e293b";
+  ctx.strokeStyle=STATE.crtEnabled?"#4ade80":"#475569";
+  ctx.beginPath();ctx.roundRect(BTN_CRT.x,BTN_CRT.y,BTN_CRT.w,BTN_CRT.h,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle="#f8fafc";
+  ctx.fillText(STATE.crtEnabled?"📺 CRT: ON":"📺 CRT: OFF", BTN_CRT.x+BTN_CRT.w/2, BTN_CRT.y+BTN_CRT.h/2);
+}
+function drawCampfireScene(){
+  ctx.fillStyle="#05070d";ctx.fillRect(0,0,canvas.width,canvas.height);
+  const fireTime=Date.now()*0.008;
+  const rad=90+Math.sin(fireTime)*12;
+  const grad=ctx.createRadialGradient(canvas.width/2,200,10,canvas.width/2,200,rad*3);
+  grad.addColorStop(0,"rgba(251,191,36,0.9)");
+  grad.addColorStop(0.3,"rgba(249,115,22,0.5)");
+  grad.addColorStop(0.7,"rgba(180,83,9,0.18)");
+  grad.addColorStop(1,"rgba(0,0,0,0)");
+  ctx.fillStyle=grad;ctx.beginPath();ctx.arc(canvas.width/2,200,rad*3,0,Math.PI*2);ctx.fill();
+  for(let i=0;i<8;i++){
+    const a=i*Math.PI/4;
+    const rx=canvas.width/2+Math.cos(a)*28;
+    const ry=210+Math.sin(a)*8;
+    ctx.fillStyle="#334155";
+    ctx.beginPath();ctx.ellipse(rx,ry,6,4,0,0,Math.PI*2);ctx.fill();
+  }
+  heroes.forEach((h,idx)=>{
+    const cx=canvas.width/2-180+idx*120,cy=215;
+    const idleF=Math.floor(STATE.animTimer/300)%4;
+    const spr=SpriteLibrary.sprites[`${h.spriteKey}_idle_${idleF}`];
+    if(spr){const sz=SPRITE_SIZE*SPRITE_SCALE*0.9;ctx.drawImage(spr,0,0,SPRITE_SIZE,SPRITE_SIZE,cx-sz/2,cy-sz/2,sz,sz);}
+  });
+  ctx.fillStyle="#facc15";ctx.font="bold 26px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+  ctx.fillText("PERISTIRAHATAN API UNGGUN",canvas.width/2,75);
+  ctx.fillStyle="#94a3b8";ctx.font="14px monospace";
+  ctx.fillText("Party pulih +40% HP & MP. Pilih 1 Relik:",canvas.width/2,105);
+  const cardW=240,cardH=140;
+  const startX=(canvas.width-(STATE.offeredRelics.length*cardW+(STATE.offeredRelics.length-1)*20))/2;
+  const cardY=320;
+  STATE.offeredRelics.forEach((relic,idx)=>{
+    const rx=startX+idx*(cardW+20);
+    ctx.fillStyle="#0f172a";ctx.strokeStyle="#38bdf8";ctx.lineWidth=2;
+    ctx.beginPath();ctx.roundRect(rx,cardY,cardW,cardH,8);ctx.fill();ctx.stroke();
+    ctx.font="32px monospace";
+    ctx.fillText(relic.icon,rx+cardW/2,cardY+45);
+    ctx.fillStyle="#f8fafc";ctx.font="bold 15px monospace";
+    ctx.fillText(relic.name,rx+cardW/2,cardY+75);
+    ctx.fillStyle="#94a3b8";ctx.font="11px monospace";
+    ctx.fillText(relic.desc,rx+cardW/2,cardY+105);
+    ctx.fillStyle="#38bdf8";ctx.font="bold 11px monospace";
+    ctx.fillText("[KLIK UNTUK MEMILIH]",rx+cardW/2,cardY+128);
+  });
+}
+function drawGameOverlay(){
+  if(isCombatFinished()&&!STATE.overSince) STATE.overSince=performance.now();
+  if(isCombatFinished()){
+    ctx.fillStyle="rgba(7,8,13,0.92)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    const isWin=STATE.turnPhase==="VICTORY";
+    ctx.fillStyle=isWin?"#facc15":"#ef4444";
+    ctx.font="bold 38px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(isWin?"DUNGEON DITAKLUKKAN!":"SELURUH PARTY GUGUR!",canvas.width/2,180);
+    ctx.fillStyle="#0f172a";ctx.strokeStyle=isWin?"#eab308":"#64748b";ctx.lineWidth=2;
+    ctx.beginPath();ctx.roundRect(canvas.width/2-240,220,480,240,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#38bdf8";ctx.font="bold 16px monospace";
+    ctx.fillText("📜 CATATAN EKSPEDISI",canvas.width/2,255);
+    ctx.fillStyle="#e2e8f0";ctx.font="13px monospace";ctx.textAlign="left";
+    const lx=canvas.width/2-200;
+    ctx.fillText(`• Total Kata: ${STATE.stats.wordsCount}`,lx,295);
+    ctx.fillText(`• Kata Terkuat: ${STATE.stats.bestWord} (${STATE.stats.bestWordDmg} dmg)`,lx,320);
+    ctx.fillText(`• Total Damage: ${STATE.stats.totalDamageDealt}`,lx,345);
+    ctx.fillText(`• Combo Max: x${STATE.maxCombo}  |  Perfect: ${STATE.wordsPerfect}`,lx,370);
+    ctx.fillText(`• Kecepatan Terbaik: ${STATE.stats.bestSpeed.toFixed(1)} huruf/detik`,lx,395);
+    ctx.fillText(`• Relik: ${STATE.relics.length} artefak`,lx,420);
+    ctx.textAlign="center";ctx.fillStyle="#94a3b8";ctx.font="bold 13px monospace";
+    ctx.fillText("Klik di mana saja / [Enter] untuk memulai ekspedisi baru",canvas.width/2,500);
+  }
+}
+
+let crtCanvas=null;
+function initCrtOverlay(){
+  crtCanvas=document.createElement("canvas");
+  crtCanvas.width=canvas.width;crtCanvas.height=canvas.height;
+  const cctx=crtCanvas.getContext("2d");
+  cctx.fillStyle="rgba(0,0,0,0.22)";
+  for(let y=0;y<canvas.height;y+=3) cctx.fillRect(0,y,canvas.width,1.2);
+  const vig=cctx.createRadialGradient(canvas.width/2,canvas.height/2,canvas.height*0.45,canvas.width/2,canvas.height/2,canvas.height*0.85);
+  vig.addColorStop(0,"rgba(0,0,0,0)");vig.addColorStop(1,"rgba(0,0,0,0.5)");
+  cctx.fillStyle=vig;cctx.fillRect(0,0,canvas.width,canvas.height);
+}
+function drawCrtEffect(){if(!STATE.crtEnabled||!crtCanvas) return;ctx.drawImage(crtCanvas,0,0);}
+
+/* =========================================================
+   BUTTON COORDS
+   ========================================================= */
+const BTN_TITLE_START={x:340,y:440,w:300,h:56};
+const BTN_BGM={x:865,y:12,w:98,h:26};
+const BTN_CRT={x:760,y:12,w:98,h:26};
+
+/* =========================================================
+   INPUT
+   ========================================================= */
+function getCanvasCoords(e){
+  const rect=canvas.getBoundingClientRect();
+  return {x:(e.clientX-rect.left)*(canvas.width/rect.width),y:(e.clientY-rect.top)*(canvas.height/rect.height)};
+}
+function handlePointerDown(e){
+  AudioSys.init();
+  const pos=getCanvasCoords(e);
+  if(pos.x>=BTN_BGM.x&&pos.x<=BTN_BGM.x+BTN_BGM.w&&pos.y>=BTN_BGM.y&&pos.y<=BTN_BGM.y+BTN_BGM.h){AudioSys.toggleBgm();return;}
+  if(pos.x>=BTN_CRT.x&&pos.x<=BTN_CRT.x+BTN_CRT.w&&pos.y>=BTN_CRT.y&&pos.y<=BTN_CRT.y+BTN_CRT.h){STATE.crtEnabled=!STATE.crtEnabled;AudioSys.playSelect(540);return;}
+  // TITLE
+  if(STATE.turnPhase==="TITLE"){
+    AudioSys.playSpecial();AudioSys.startBgm();startWalkInTransition();return;
+  }
+  // CAMPFIRE
+  if(STATE.turnPhase==="CAMPFIRE"){handleCampfireClick(pos.x,pos.y);return;}
+  // GAME OVER
+  if(isCombatFinished()){ if(performance.now()-STATE.overSince<900) return; resetGame(); return; }
+
+  // HERO_READY: skill buttons + tombol MULAI
+  if(STATE.turnPhase==="HERO_READY"){
+    const SKILL_BTNS=[{x:485,y:450,w:230,h:64},{x:725,y:450,w:230,h:64}];
+    for(let i=0;i<SKILL_BTNS.length;i++){
+      const b=SKILL_BTNS[i];
+      if(pos.x>=b.x&&pos.x<=b.x+b.w&&pos.y>=b.y&&pos.y<=b.y+b.h){STATE.selectedSkillIndex=i;AudioSys.playSelect(520);return;}
+    }
+    // Tombol MULAI (panel kiri bawah)
+    if(pos.x>=36&&pos.x<=444&&pos.y>=620&&pos.y<=648){ beginHeroTypingTurn(); return; }
+    return;
+  }
+  // HERO_TYPING: klik tidak ada aksi
+  if(STATE.turnPhase==="HERO_TYPING"){ return; }
+  // HERO_TURN_END: klik LANJUT
+  if(STATE.turnPhase==="HERO_TURN_END"){
+    if(pos.x>=340&&pos.x<=640&&pos.y>=555&&pos.y<=615){ advanceTurn(); return; }
+    return;
+  }
+  // Lainnya: klik musuh untuk target
+  if(!canPlayerAct()) return;
+  enemies.forEach((en,idx)=>{
+    if(en.hp>0){
+      const ex=en.x-44,ey=en.y-52;
+      if(pos.x>=ex&&pos.x<=ex+88&&pos.y>=ey&&pos.y<=ey+104){
+        STATE.selectedEnemyIndex=idx;AudioSys.playSelect(650);
+        spawnDamageNumber(en.x,en.y-90,"🎯 TARGET!","#38bdf8");
+      }
+    }
+  });
+}
+canvas.addEventListener("pointerdown", handlePointerDown);
+
+window.addEventListener("keydown",(e)=>{
+  AudioSys.init();
+  if(e.code==="KeyM"){AudioSys.toggleBgm();return;}
+  if(e.code==="KeyC"){STATE.crtEnabled=!STATE.crtEnabled;AudioSys.playSelect(540);return;}
+
+  // TITLE
+  if(STATE.turnPhase==="TITLE"){
+    if(e.code==="Enter"||e.code==="Space"){
+      e.preventDefault();
+      AudioSys.playSpecial(); AudioSys.startBgm(); startWalkInTransition();
+    }
+    return;
+  }
+  // CAMPFIRE
+  if(STATE.turnPhase==="CAMPFIRE"){
+    if(e.code==="Enter"||e.code==="Space"){
+      e.preventDefault();
+      if(STATE.offeredRelics.length>0){
+        const cardW=240;
+        const startX=(canvas.width-(STATE.offeredRelics.length*cardW+(STATE.offeredRelics.length-1)*20))/2;
+        handleCampfireClick(startX+cardW/2, 390);
+      }
+    }
+    return;
+  }
+  // GAME OVER
+  if(isCombatFinished()){
+    if(e.code==="Enter"||e.code==="Space"){
+      e.preventDefault();
+      if(performance.now()-STATE.overSince>900) resetGame();
+    }
+    return;
+  }
+  // HERO_READY
+  if(STATE.turnPhase==="HERO_READY"){
+    if(e.code==="Digit1"||e.code==="Numpad1"){ STATE.selectedSkillIndex=0; AudioSys.playSelect(500); return; }
+    if(e.code==="Digit2"||e.code==="Numpad2"){ STATE.selectedSkillIndex=1; AudioSys.playSelect(500); return; }
+    if(e.code==="Enter"||e.code==="Space"){ e.preventDefault(); beginHeroTypingTurn(); return; }
+    if(e.code==="Tab"){ e.preventDefault(); skipTurn(); return; }
+    if(e.code==="KeyU"){ triggerPartyRush(); return; }
+    return;
+  }
+  // HERO_TYPING — hanya A-Z, R, Enter
+  if(STATE.turnPhase==="HERO_TYPING"){
+    if(e.code==="Enter"){ e.preventDefault(); finishHeroTypingTurn(); return; }
+    if(e.code==="Backspace"||e.code==="Escape"){ e.preventDefault(); return; }
+    if(e.code==="KeyR"){ e.preventDefault(); skipCurrentWord(); return; }
+    if(e.key.length===1 && /[a-zA-Z]/.test(e.key)){ e.preventDefault(); handleTypingKey(e.key); }
+    return;
+  }
+  // HERO_TURN_END
+  if(STATE.turnPhase==="HERO_TURN_END"){
+    if(e.code==="Enter"||e.code==="Space"){ e.preventDefault(); advanceTurn(); }
+    return;
+  }
+});
+
+/* =========================================================
+   MAIN LOOP
+   ========================================================= */
+let lastFrameTime=0;
+function gameLoop(timestamp){
+  STATE.animTimer=timestamp;
+  const dt=lastFrameTime?Math.min(100,timestamp-lastFrameTime):16.6;
+  lastFrameTime=timestamp;
+  if(STATE.hitFreezeTimer>0){
+    STATE.hitFreezeTimer-=dt;
+    if(STATE.hitFreezeTimer>0){requestAnimationFrame(gameLoop);return;}
+    STATE.hitFreezeTimer=0;
+  }
+  // Update turn timer kalau sedang mengetik
+  if(STATE.turnPhase==="HERO_TYPING"){
+    STATE.turnElapsed = performance.now() - STATE.turnTimeStart;
+    if(STATE.turnElapsed >= STATE.turnTimeLimit){
+      finishHeroTypingTurn();
+    }
+  }
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save();
+  if(STATE.screenShake>0){
+    ctx.translate((Math.random()-0.5)*STATE.screenShake,(Math.random()-0.5)*STATE.screenShake);
+    STATE.screenShake=Math.max(0,STATE.screenShake-0.6);
+  }
+  if(STATE.turnPhase==="TITLE"){drawTitleScreen();}
+  else if(STATE.turnPhase==="CAMPFIRE"){drawCampfireScene();}
+  else {
+    updateHeroWalking(dt);
+    drawDungeonBackground();
+    const isWalkingPhase=STATE.turnPhase==="HERO_WALK_IN"||STATE.turnPhase==="HERO_WALK_OUT";
+    if(!isWalkingPhase||STATE.turnPhase==="HERO_WALK_IN"){
+      normalizeSelectedTarget();
+      enemies.forEach((enemy,idx)=>{
+        const isTargeted=STATE.selectedEnemyIndex===idx&&!isWalkingPhase;
+        drawCharacterSprite(enemy,false,isTargeted,false);
+      });
+    }
+    heroes.forEach((hero,idx)=>{
+      const isCurrent=(STATE.turnPhase==="HERO_READY"||STATE.turnPhase==="HERO_TYPING"||STATE.turnPhase==="HERO_TURN_END")&&STATE.activeHeroIndex===idx;
+      drawCharacterSprite(hero,isCurrent,false,isWalkingPhase);
+    });
+    updateAndDrawProjectiles();
+    ctx.restore();
+    ctx.save();
+    if(!isWalkingPhase){
+      drawTypingPanel();
+    } else {
+      ctx.fillStyle="rgba(15,23,42,0.85)";
+      ctx.fillRect(0,480,canvas.width,100);
+      ctx.strokeStyle="#38bdf8";ctx.lineWidth=2;
+      ctx.strokeRect(0,480,canvas.width,100);
+      ctx.fillStyle="#facc15";ctx.font="bold 20px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+      if(STATE.turnPhase==="HERO_WALK_IN"){
+        ctx.fillText(`MEMASUKI RUANG DUNGEON ${STATE.wave}...`,canvas.width/2,520);
+        ctx.fillStyle="#94a3b8";ctx.font="13px monospace";
+        ctx.fillText("Bersiap mengetik! Party bergerak ke posisi.",canvas.width/2,548);
+      } else {
+        ctx.fillText("RUANG DIBERSIHKAN! BERGERAK MAJU...",canvas.width/2,520);
+      }
+    }
+  }
+  for(let i=STATE.particles.length-1;i>=0;i--){
+    const p=STATE.particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.life-=0.035;
+    if(p.life<=0) STATE.particles.splice(i,1);
+    else{ctx.fillStyle=p.color;ctx.globalAlpha=p.life;ctx.fillRect(p.x,p.y,p.size,p.size);ctx.globalAlpha=1;}
+  }
+  for(let i=STATE.damageNumbers.length-1;i>=0;i--){
+    const d=STATE.damageNumbers[i];
+    d.y+=d.vy;d.life-=d.decay||0.02;
+    d.scaleT=(d.scaleT||0)+0.1;
+    d.scale=0.5+Math.min(1.3,d.scaleT)*0.7;
+    if(d.scale>1.3) d.scale=1.3-(d.scale-1.3)*0.3;
+    if(d.life<=0) STATE.damageNumbers.splice(i,1);
+    else{
+      ctx.save();
+      ctx.translate(d.x,d.y);
+      ctx.scale(d.scale,d.scale);
+      ctx.fillStyle=d.color;ctx.globalAlpha=d.life;
+      ctx.font="bold 20px monospace";ctx.textAlign="center";
+      ctx.fillText(d.text,0,0);
+      ctx.restore();
+      ctx.globalAlpha=1;
+    }
+  }
+  drawGameOverlay();
+  drawCrtEffect();
+  ctx.restore();
+  requestAnimationFrame(gameLoop);
+}
+
+/* =========================================================
+   BOOT
+   ========================================================= */
+SpriteLibrary.init();
+initCrtOverlay();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
