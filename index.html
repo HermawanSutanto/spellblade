@@ -1,0 +1,3617 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Spellblade: Word Dungeon Party (Deluxe Edition)</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    body {
+      background: #040508;
+      color: #e2e8f0;
+      font-family: 'Courier New', Courier, monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow-x: hidden;
+      padding: 6px;
+    }
+    #game-container {
+      position: relative;
+      width: 100%;
+      max-width: 980px;
+      box-shadow: 0 16px 50px rgba(0, 0, 0, 0.95), 0 0 35px rgba(99, 102, 241, 0.35);
+      border: 3px solid #1e293b;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #090b14;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      touch-action: none;
+      cursor: default;
+    }
+    .instructions {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #94a3b8;
+      text-align: center;
+      letter-spacing: 0.3px;
+      max-width: 980px;
+      line-height: 1.5;
+    }
+    .kbd {
+      background: #1e293b;
+      color: #f8fafc;
+      padding: 2px 5px;
+      border-radius: 4px;
+      border: 1px solid #334155;
+      font-weight: bold;
+    }
+    .badge-info { color: #38bdf8; font-weight: bold; }
+    .badge-warn { color: #f97316; font-weight: bold; }
+    .badge-star { color: #facc15; font-weight: bold; }
+    .badge-frost { color: #93c5fd; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+<div id="game-container">
+  <canvas id="gameCanvas" width="980" height="650"></canvas>
+</div>
+<div class="instructions">
+  🎮 <b>Ketik langsung (A-Z)</b> / klik ubin • Klik musuh = <span class="badge-info">🎯 Target</span> • <span class="kbd">ENTER</span> Serang • <span class="kbd">1</span>/<span class="kbd">2</span> Skill • <span class="kbd">Tab</span> Tahan • <span class="kbd">R</span> Acak • <span class="kbd">U</span> RUSH • <span class="kbd">M</span> BGM • <span class="kbd">C</span> CRT<br>
+  Ubin: <span class="badge-warn">💣 Bom</span>, <span class="badge-warn">🔥 Api</span>, <span class="badge-frost">❄️ Es</span>, <span class="badge-info">⚡ Petir</span>, <span class="badge-star">⭐ Bintang</span>, <span class="badge-info">💎 Kristal</span>, <span class="badge-info">🛡️ Guard</span>, <span class="badge-warn">☠️ Racun</span>
+</div>
+
+<script>
+const BALANCE = {
+  burnDamage: 14,
+  freezeDuration: 1,
+  chainZapDamage: 12,
+  starMultiplierBonus: 1.35,
+  guardMultiplier: 0.60,
+  campfireHealPercent: 0.40,
+  enemyBaseDamage: 12,
+  enemyWaveDamage: 3.5,
+  turnMpRegen: 7,
+  grailBonusMp: 4,
+  skipMp: 9,
+  manaTileMp: 15,
+  poisonTileDamage: 6,
+  doomDamage: 26,
+  quillHeal: 14,
+  vampireLeechPercent: 0.25,
+  magmaFireBonus: 14,
+  crisisThreshold: 0.35,
+  crisisMultiplier: 1.4,
+  maxParticles: 450
+};
+
+function getEnemyAttackPower(wave, isCaster = false) {
+  if (isCaster) return 12 + wave * 4;
+  return Math.round(BALANCE.enemyBaseDamage + wave * BALANCE.enemyWaveDamage);
+}
+
+const AudioSys = {
+  ctx: null,
+  bgmInterval: null,
+  bgmPlaying: false,
+  step: 0,
+
+  init() {
+    if (!this.ctx) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AudioContext();
+    }
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+  },
+
+  toggleBgm() {
+    this.init();
+    if (this.bgmPlaying) this.stopBgm();
+    else this.startBgm();
+  },
+
+  startBgm() {
+    if (this.bgmPlaying) return;
+    this.bgmPlaying = true;
+    const bass = [110, 110, 130.81, 146.83, 110, 164.81, 146.83, 123.47];
+    const leads = [220, 0, 261.63, 293.66, 329.63, 392.00, 293.66, 246.94];
+
+    this.bgmInterval = setInterval(() => {
+      if (!this.ctx || !this.bgmPlaying) return;
+      const t = this.ctx.currentTime;
+
+      const bassFreq = bass[this.step % bass.length];
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(bassFreq, t);
+      gain.gain.setValueAtTime(0.07, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.17);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.17);
+
+      const leadFreq = leads[this.step % leads.length];
+      if (leadFreq > 0 && Math.random() < 0.88) {
+        const losc = this.ctx.createOscillator();
+        const lgain = this.ctx.createGain();
+        losc.type = 'square';
+        losc.frequency.setValueAtTime(leadFreq, t);
+        lgain.gain.setValueAtTime(0.025, t);
+        lgain.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
+        losc.connect(lgain);
+        lgain.connect(this.ctx.destination);
+        losc.start(t);
+        losc.stop(t + 0.20);
+      }
+      this.step++;
+    }, 175);
+  },
+
+  stopBgm() {
+    this.bgmPlaying = false;
+    if (this.bgmInterval) {
+      clearInterval(this.bgmInterval);
+      this.bgmInterval = null;
+    }
+  },
+
+  playSelect(pitch = 440) {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(pitch, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.08);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.08);
+  },
+
+  playSlash() {
+    if (!this.ctx) return;
+    const node = this.ctx.createBufferSource();
+    const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.15, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < buffer.length; i++) data[i] = Math.random() * 2 - 1;
+    node.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(1400, this.ctx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(120, this.ctx.currentTime + 0.15);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.35, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.15);
+    node.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.ctx.destination);
+    node.start();
+  },
+
+  playBow() {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(240, this.ctx.currentTime + 0.18);
+    gain.gain.setValueAtTime(0.25, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.18);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.18);
+  },
+
+  playMagic() {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(320, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(960, this.ctx.currentTime + 0.28);
+    gain.gain.setValueAtTime(0.22, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.3);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.3);
+  },
+
+  playFreeze() {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1100, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(1600, this.ctx.currentTime + 0.22);
+    gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.25);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.25);
+  },
+
+  playZap() {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(700, this.ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(180, this.ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.26, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.15);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.15);
+  },
+
+  playHeal() {
+    if (!this.ctx) return;
+    [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, this.ctx.currentTime + i * 0.05);
+      gain.gain.setValueAtTime(0.12, this.ctx.currentTime + i * 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.05 + 0.2);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(this.ctx.currentTime + i * 0.05);
+      osc.stop(this.ctx.currentTime + i * 0.05 + 0.2);
+    });
+  },
+
+  playSubmitSuccess(len) {
+    if (!this.ctx) return;
+    const base = 480;
+    const notes = [base, base * 1.25, base * 1.5, base * (1 + len * 0.15)];
+    notes.forEach((freq, idx) => {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(freq, this.ctx.currentTime + idx * 0.05);
+      gain.gain.setValueAtTime(0.14, this.ctx.currentTime + idx * 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + idx * 0.05 + 0.16);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(this.ctx.currentTime + idx * 0.05);
+      osc.stop(this.ctx.currentTime + idx * 0.05 + 0.16);
+    });
+  },
+
+  playSpecial() {
+    if (!this.ctx) return;
+    [580, 780, 1050, 1400].forEach((freq, idx) => {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, this.ctx.currentTime + idx * 0.04);
+      gain.gain.setValueAtTime(0.14, this.ctx.currentTime + idx * 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + idx * 0.04 + 0.14);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(this.ctx.currentTime + idx * 0.04);
+      osc.stop(this.ctx.currentTime + idx * 0.04 + 0.14);
+    });
+  },
+
+  playCampfire() {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(330, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(660, this.ctx.currentTime + 0.4);
+    gain.gain.setValueAtTime(0.14, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.45);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.45);
+  },
+
+  playExplode() {
+    if (!this.ctx) return;
+    const node = this.ctx.createBufferSource();
+    const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.35, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < buffer.length; i++) data[i] = Math.random() * 2 - 1;
+    node.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(450, this.ctx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(40, this.ctx.currentTime + 0.35);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.5, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.35);
+    node.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.ctx.destination);
+    node.start();
+  }
+};
+
+const SPRITE_SIZE = 24;
+const SPRITE_SCALE = 3;
+
+class PixelCanvas {
+  constructor(w = SPRITE_SIZE, h = SPRITE_SIZE) {
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.ctx = this.canvas.getContext("2d");
+    this.ctx.imageSmoothingEnabled = false;
+  }
+  px(x, y, color) {
+    if (x < 0 || x >= SPRITE_SIZE || y < 0 || y >= SPRITE_SIZE) return;
+    this.ctx.fillStyle = color;
+    this.ctx.fillRect(Math.floor(x), Math.floor(y), 1, 1);
+  }
+  rect(x, y, w, h, color) {
+    this.ctx.fillStyle = color;
+    this.ctx.fillRect(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h));
+  }
+}
+
+const SpriteLibrary = {
+  sprites: {},
+  init() {
+    this.sprites["warrior_idle_0"] = this.buildWarrior(0, "idle");
+    this.sprites["warrior_idle_1"] = this.buildWarrior(1, "idle");
+    this.sprites["warrior_walk_0"] = this.buildWarrior(0, "walk");
+    this.sprites["warrior_walk_1"] = this.buildWarrior(1, "walk");
+    this.sprites["warrior_act"]    = this.buildWarrior(0, "act");
+
+    this.sprites["ranger_idle_0"] = this.buildRanger(0, "idle");
+    this.sprites["ranger_idle_1"] = this.buildRanger(1, "idle");
+    this.sprites["ranger_walk_0"] = this.buildRanger(0, "walk");
+    this.sprites["ranger_walk_1"] = this.buildRanger(1, "walk");
+    this.sprites["ranger_act"]    = this.buildRanger(0, "act");
+
+    this.sprites["mage_idle_0"] = this.buildMage(0, "idle");
+    this.sprites["mage_idle_1"] = this.buildMage(1, "idle");
+    this.sprites["mage_walk_0"] = this.buildMage(0, "walk");
+    this.sprites["mage_walk_1"] = this.buildMage(1, "walk");
+    this.sprites["mage_act"]    = this.buildMage(0, "act");
+
+    this.sprites["cleric_idle_0"] = this.buildCleric(0, "idle");
+    this.sprites["cleric_idle_1"] = this.buildCleric(1, "idle");
+    this.sprites["cleric_walk_0"] = this.buildCleric(0, "walk");
+    this.sprites["cleric_walk_1"] = this.buildCleric(1, "walk");
+    this.sprites["cleric_act"]    = this.buildCleric(0, "act");
+
+    this.sprites["orc_idle_0"] = this.buildOrc(0, "idle");
+    this.sprites["orc_idle_1"] = this.buildOrc(1, "idle");
+    this.sprites["orc_act"]    = this.buildOrc(0, "act");
+
+    this.sprites["drakonit_idle_0"] = this.buildDrakonit(0, "idle");
+    this.sprites["drakonit_idle_1"] = this.buildDrakonit(1, "idle");
+    this.sprites["drakonit_act"]    = this.buildDrakonit(0, "act");
+
+    this.sprites["slime_idle_0"] = this.buildSlime(0, "idle");
+    this.sprites["slime_idle_1"] = this.buildSlime(1, "idle");
+    this.sprites["slime_act"]    = this.buildSlime(0, "act");
+
+    this.sprites["golem_idle_0"] = this.buildGolem(0, "idle");
+    this.sprites["golem_idle_1"] = this.buildGolem(1, "idle");
+    this.sprites["golem_act"]    = this.buildGolem(0, "act");
+
+    this.sprites["wyrm_idle_0"] = this.buildWyrm(0, "idle");
+    this.sprites["wyrm_idle_1"] = this.buildWyrm(1, "idle");
+    this.sprites["wyrm_act"]    = this.buildWyrm(0, "act");
+  },
+
+  buildWarrior(frame, state) {
+    const pc = new PixelCanvas();
+    const isWalk = state === "walk";
+    const bob = (isWalk || frame === 1) ? 1 : 0;
+    const isAct = state === "act";
+    pc.rect(6, 21, 12, 2, "rgba(0,0,0,0.45)");
+    pc.rect(7, 9 + bob, 10, 10, "#991b1b");
+    pc.rect(6, 12 + bob, 2, 7, "#7f1d1d");
+
+    if (isWalk) {
+      if (frame === 0) {
+        pc.rect(6, 19, 4, 3, "#334155");
+        pc.rect(14, 18, 4, 3, "#1e293b");
+      } else {
+        pc.rect(8, 18, 4, 3, "#334155");
+        pc.rect(12, 19, 4, 3, "#1e293b");
+      }
+    } else {
+      pc.rect(7, 19, 4, 3, "#334155");
+      pc.rect(13, 19, 4, 3, "#1e293b");
+    }
+
+    pc.rect(8, 15 + bob, 3, 4, "#475569");
+    pc.rect(13, 15 + bob, 3, 4, "#334155");
+    pc.rect(8, 8 + bob, 8, 7, "#64748b");
+    pc.rect(9, 9 + bob, 6, 5, "#94a3b8");
+    pc.rect(11, 10 + bob, 2, 4, "#cbd5e1");
+    pc.rect(8, 3 + bob, 8, 6, "#64748b");
+    pc.rect(9, 4 + bob, 6, 4, "#94a3b8");
+    pc.rect(9, 6 + bob, 6, 2, "#0f172a");
+    pc.px(10, 6 + bob, "#38bdf8");
+    pc.px(13, 6 + bob, "#38bdf8");
+    pc.rect(10, 0 + bob, 4, 3, "#ef4444");
+    pc.rect(15, 8 + bob, 6, 9, "#1e293b");
+    pc.rect(16, 9 + bob, 4, 7, "#3b82f6");
+    if (isAct) {
+      pc.rect(3, 7 + bob, 2, 7, "#eab308");
+      pc.rect(0, 9 + bob, 3, 3, "#e2e8f0");
+    } else {
+      pc.rect(2, 6 + bob, 3, 2, "#eab308");
+      pc.rect(2, 2 + bob, 3, 6, "#f1f5f9");
+    }
+    return pc.canvas;
+  },
+
+  buildRanger(frame, state) {
+    const pc = new PixelCanvas();
+    const isWalk = state === "walk";
+    const bob = (isWalk || frame === 1) ? 1 : 0;
+    const isAct = state === "act";
+    pc.rect(6, 21, 12, 2, "rgba(0,0,0,0.45)");
+    pc.rect(7, 9 + bob, 10, 10, "#15803d");
+
+    if (isWalk) {
+      if (frame === 0) {
+        pc.rect(7, 19, 4, 3, "#78350f");
+        pc.rect(13, 18, 4, 3, "#451a03");
+      } else {
+        pc.rect(9, 18, 4, 3, "#78350f");
+        pc.rect(11, 19, 4, 3, "#451a03");
+      }
+    } else {
+      pc.rect(8, 19, 4, 3, "#78350f");
+      pc.rect(12, 19, 4, 3, "#451a03");
+    }
+
+    pc.rect(8, 3 + bob, 8, 6, "#166534");
+    pc.rect(7, 4 + bob, 2, 8, "#14532d");
+    pc.rect(9, 5 + bob, 6, 4, "#fed7aa");
+    pc.px(10, 6 + bob, "#15803d");
+    pc.px(13, 6 + bob, "#15803d");
+    pc.rect(9, 1 + bob, 6, 3, "#15803d");
+    pc.px(14, 0 + bob, "#eab308");
+    const bowX = isAct ? 2 : 4;
+    const bowY = isAct ? 3 + bob : 5 + bob;
+    pc.rect(bowX + 2, bowY, 2, 12, "#78350f");
+    pc.px(bowX + 1, bowY - 1, "#a16207");
+    pc.px(bowX + 1, bowY + 12, "#a16207");
+    pc.rect(bowX, bowY + 1, 1, 10, "#cbd5e1");
+    if (isAct) {
+      pc.rect(bowX - 2, bowY + 5, 6, 2, "#38bdf8");
+    }
+    return pc.canvas;
+  },
+
+  buildMage(frame, state) {
+    const pc = new PixelCanvas();
+    const isWalk = state === "walk";
+    const bob = (isWalk || frame === 1) ? 1 : 0;
+    const isAct = state === "act";
+    pc.rect(6, 21, 12, 2, "rgba(0,0,0,0.45)");
+    pc.rect(7, 10 + bob, 10, 10, "#312e81");
+    pc.rect(6, 14 + bob, 12, 6, "#1e1b4b");
+    if (isWalk) {
+      if (frame === 0) {
+        pc.rect(7, 20, 4, 2, "#0f172a");
+        pc.rect(13, 19, 4, 2, "#0f172a");
+      } else {
+        pc.rect(9, 19, 4, 2, "#0f172a");
+        pc.rect(11, 20, 4, 2, "#0f172a");
+      }
+    }
+    pc.rect(8, 5 + bob, 8, 5, "#0f172a");
+    pc.px(10, 7 + bob, "#fde047");
+    pc.px(13, 7 + bob, "#fde047");
+    pc.rect(5, 5 + bob, 14, 2, "#3730a3");
+    pc.rect(7, 3 + bob, 10, 2, "#4338ca");
+    pc.rect(9, 1 + bob, 6, 2, "#4f46e5");
+    const staffX = isAct ? 3 : 5;
+    const staffY = isAct ? 3 + bob : 5 + bob;
+    pc.rect(staffX + 1, staffY + 4, 2, 12, "#78350f");
+    const orbGlow = frame === 1 ? "#67e8f9" : "#22d3ee";
+    pc.rect(staffX, staffY - 1, 4, 3, orbGlow);
+    pc.px(staffX + 1, staffY, "#ffffff");
+    return pc.canvas;
+  },
+
+  buildCleric(frame, state) {
+    const pc = new PixelCanvas();
+    const isWalk = state === "walk";
+    const bob = (isWalk || frame === 1) ? 1 : 0;
+    const isAct = state === "act";
+    pc.rect(6, 21, 12, 2, "rgba(0,0,0,0.45)");
+    pc.rect(7, 9 + bob, 10, 11, "#f1f5f9");
+    pc.rect(9, 9 + bob, 6, 11, "#cbd5e1");
+    if (isWalk) {
+      if (frame === 0) {
+        pc.rect(7, 20, 3, 2, "#64748b");
+        pc.rect(14, 19, 3, 2, "#64748b");
+      } else {
+        pc.rect(8, 19, 3, 2, "#64748b");
+        pc.rect(13, 20, 3, 2, "#64748b");
+      }
+    }
+    pc.rect(8, 3 + bob, 8, 6, "#f8fafc");
+    pc.rect(9, 4 + bob, 6, 4, "#fed7aa");
+    pc.px(10, 5 + bob, "#475569");
+    pc.px(13, 5 + bob, "#475569");
+    pc.rect(8, 0 + bob, 8, 2, "rgba(250, 204, 21, 0.85)");
+    const maceX = isAct ? 2 : 4;
+    const maceY = isAct ? 4 + bob : 7 + bob;
+    pc.rect(maceX + 1, maceY + 4, 2, 10, "#475569");
+    pc.rect(maceX - 1, maceY, 6, 5, "#94a3b8");
+    pc.px(maceX + 1, maceY + 2, "#facc15");
+    return pc.canvas;
+  },
+
+  buildOrc(frame, state) {
+    const pc = new PixelCanvas();
+    const bob = frame === 1 ? 1 : 0;
+    const isAct = state === "act";
+    pc.rect(5, 21, 14, 2, "rgba(0,0,0,0.5)");
+    pc.rect(6, 7 + bob, 12, 11, "#15803d");
+    pc.rect(7, 2 + bob, 10, 6, "#15803d");
+    pc.px(9, 4 + bob, "#ef4444");
+    pc.px(14, 4 + bob, "#ef4444");
+    pc.rect(8, 6 + bob, 2, 2, "#f8fafc");
+    pc.rect(14, 6 + bob, 2, 2, "#f8fafc");
+    const axeX = isAct ? 16 : 14;
+    const axeY = isAct ? 2 + bob : 4 + bob;
+    pc.rect(axeX + 1, axeY, 2, 16, "#78350f");
+    pc.rect(axeX + 2, axeY + 1, 5, 7, "#475569");
+    return pc.canvas;
+  },
+
+  buildDrakonit(frame, state) {
+    const pc = new PixelCanvas();
+    const bob = frame === 1 ? 1 : 0;
+    const isAct = state === "act";
+    pc.rect(5, 21, 14, 2, "rgba(76, 29, 149, 0.4)");
+    pc.rect(6, 9 + bob, 12, 11, "#4c1d95");
+    pc.rect(6, 3 + bob, 11, 7, "#3b0764");
+    pc.px(7, 5 + bob, "#4ade80");
+    pc.px(10, 5 + bob, "#4ade80");
+    const staffX = isAct ? 1 : 3;
+    const staffY = isAct ? 3 + bob : 5 + bob;
+    pc.rect(staffX + 1, staffY + 3, 2, 13, "#1e1b4b");
+    pc.rect(staffX, staffY, 4, 4, "#a855f7");
+    return pc.canvas;
+  },
+
+  buildSlime(frame) {
+    const pc = new PixelCanvas();
+    const squash = frame === 1 ? 2 : 0;
+    pc.rect(5, 21, 14, 2, "rgba(0,0,0,0.4)");
+    pc.rect(6, 12 + squash, 12, 9 - squash, "#22c55e");
+    pc.rect(4, 15 + squash, 16, 6 - squash, "#16a34a");
+    pc.rect(7, 10 + squash, 10, 4, "#4ade80");
+    pc.px(8, 14 + squash, "#0f172a");
+    pc.px(14, 14 + squash, "#0f172a");
+    pc.px(9, 13 + squash, "#ffffff");
+    pc.px(15, 13 + squash, "#ffffff");
+    return pc.canvas;
+  },
+
+  buildGolem(frame, state) {
+    const pc = new PixelCanvas();
+    const bob = frame === 1 ? 1 : 0;
+    const isAct = state === "act";
+    pc.rect(4, 21, 16, 2, "rgba(0,0,0,0.6)");
+    pc.rect(5, 6 + bob, 14, 14, "#475569");
+    pc.rect(7, 2 + bob, 10, 7, "#334155");
+    pc.rect(6, 10 + bob, 12, 8, "#64748b");
+    pc.px(9, 5 + bob, "#06b6d4");
+    pc.px(14, 5 + bob, "#06b6d4");
+    if (isAct) {
+      pc.rect(1, 8 + bob, 5, 8, "#94a3b8");
+    } else {
+      pc.rect(2, 9 + bob, 4, 8, "#64748b");
+    }
+    return pc.canvas;
+  },
+
+  buildWyrm(frame, state) {
+    const pc = new PixelCanvas();
+    const bob = frame === 1 ? 1 : 0;
+    const isAct = state === "act";
+    pc.rect(2, 21, 20, 2, "rgba(220, 38, 38, 0.4)");
+    pc.rect(5, 7 + bob, 14, 13, "#7f1d1d");
+    pc.rect(6, 1 + bob, 12, 8, "#991b1b");
+    pc.px(8, 3 + bob, "#facc15");
+    pc.px(14, 3 + bob, "#facc15");
+    pc.rect(8, 7 + bob, 8, 2, "#450a0a");
+    pc.rect(4, 0 + bob, 3, 4, "#1e1b4b");
+    pc.rect(17, 0 + bob, 3, 4, "#1e1b4b");
+    pc.rect(0, 5 + bob, 5, 8, "#b91c1c");
+    pc.rect(19, 5 + bob, 5, 8, "#b91c1c");
+    if (isAct) {
+      pc.rect(9, 8 + bob, 6, 4, "#f97316");
+    }
+    return pc.canvas;
+  }
+};
+
+const RAW_WORDS = [
+  "API","AIR","BATU","BESI","BAJA","BUMI","KAYU","KUAT","MATI","HIDUP",
+  "RACUN","PEDANG","PANAH","KILAT","SIHIR","DARAH","HANTU","SERANG","NAGA",
+  "KERA","KUCING","BURUNG","RAJA","RATU","KOTA","DESA","HUTAN","LAUT",
+  "LANGIT","MAKAN","MINUM","JALAN","LARI","LOMPAT","TIKAM","TEBAS","HANCUR",
+  "RUSAK","SEHAT","OBAT","RAMUAN","CAHAYA","GELAP","SUCI","KUTUK","JIWA",
+  "RAGA","MATA","TANGAN","KAKI","KEPALA","DADA","TULANG","BEKU","PANAS",
+  "DINGIN","ANGIN","DAUN","AKAR","POHON","EMAS","PERAK","KACA","KERTAS",
+  "BUKU","ILMU","WAKTU","HARI","MALAM","SIANG","PAGI","SORE","BULAN",
+  "BINTANG","SURYA","GUGUR","MEKAR","TUMBUH","JATUH","BANGKIT","MENANG",
+  "KALAH","BISA","BUKAN","KAMI","KITA","MEREKA","KAMU","SAYA","DIA","ADA",
+  "DARI","PADA","DENGAN","UNTUK","JIKA","MAKA","LAGI","AKAN","SUDAH","TELAH",
+  "PERNAH","BARU","LAMA","BESAR","KECIL","TINGGI","RENDAH","CEPAT","LAMBAT",
+  "KERAS","LEMBUT","TAJAM","TUMPUL","MERAH","BIRU","HIJAU","KUNING","HITAM",
+  "PUTIH","ABU","UNGU","COKLAT","GIGI","GULA","SUSU","KOPI","TEH","SAPU",
+  "TALI","TAHU","IKAN","AYAM","RUSA","KATA","SEGI","TEBA","ROTI","NASI",
+  "BUAH","APEL","DURI","KULIT","ASAP","DEBU","TANAH","LUMPUR","PASIR",
+  "KABUT","PETIR","TOPAN","GELOMBANG","ARUS","HULU","HILIR","PINTU","KUNCI",
+  "DINDING","ATAP","LANTAI","TIANG","PONDASI","PAGAR","KANDANG","TAMAN",
+  "KOLAM","SUMUR","JEMBATAN","PERAHU","KAPAL","LAYAR","DAYUNG","KERETA",
+  "RODA","RANTAI","TOMBOK","PERISAI","HELM","ZIRAH","SEPATU","TOPI","JUBAH",
+  "CINCIN","KALUNG","MAHKOTA","TONGKAT","BUSUR","ANAK","BAPAK","IBU","GURU",
+  "TEMAN","SAHABAT","MUSUH","LAWAN","PASUKAN","TENTARA","KSATRIA","PENYIHIR",
+  "TABIB","PEMBURU","PENCURI","PENGAWAL","PANGERAN","PUTRI","DEWA","DEWI",
+  "MONSTER","GOBLIN","ORC","SLIME","ZOMBIE","SKELETON","IBLIS","SETAN",
+  "MANA","KAU","INI","ITU","APA","BILA","SAAT","TADI","ESOK","SINI","SANA",
+  "BAIK","JAHAT","DEKAT","JAUH","LUAR","DALAM","ATAS","BAWAH","KIRI","KANAN",
+  "FIRE","ICE","BOLT","SWORD","SHIELD","HEAL","SLASH","MAGIC","POWER","STAR"
+];
+
+const EXTRA_WORDS = [
+  "RUMAH","BATIK","SENJATA","JURUS","PERANG","DAMAI","MUSIM","HUJAN","BADAI","GUNUNG","BUKIT",
+  "LEMBAH","GUA","KERIS","TOMBAK","KAPAK","GADA","PALU","BERANI","PERKASA","TAKUT","MARAH",
+  "CINTA","HATI","PIKIR","HURUF","NAMA","SUARA","GEMA","TERANG","REDUP","SINAR","KILAU","INTAN",
+  "OBOR","BARA","NYALA","BAKAR","LELEH","SALJU","EMBUN","BANJIR","GEMPA","MANTRA","JAMPI","ROH",
+  "ARWAH","LAVA","SEMBUH","PULIH","BERKAT","DOA","RAWAT","OBATI","LINDUNG","TAHAN","LUKA","SAKIT",
+  "LEMAH","BAJU","TAMENG","PAHLAWAN","BENDERA","PERMATA","BERLIAN","MUTIARA","LILIN","BIDIK","TEMBAK"
+];
+
+const DICT_PACK = "ABAD ABADI ABAL ABDI ABJAD ABLASI ABRASI ABSES ABSURD ABU ACAK ACARA ACEH ACUAN ACUH ADAB ADAM ADAS ADAT ADEGAN ADIK ADOPSI ADU ADUK AEROBIK AGAK AGAMA AGEN AGUS AHI AHLI AIR AJAIB AJAL AJANG AJAR AJENG AJI AKAD AKAL AKAR AKBAR AKHIR AKIK AKRAB AKSARA AKSI AKTA AKTIF AKTOR AKU AKUN AKUT ALAM ALAMAT ALAMI ALANG ALAS ALAT ALFA ALGA ALIH ALIM ALIR ALIS ALUN ALUR AMAL AMAN AMAR AMBIL AMBISI AMBON AMIN AMPUH ANAK ANDAI ANEKA ANGGAR ANGGOTA ANGGUR ANGIN ANGKA ANGKAT ANGSA ANIS ANJING ANTAR ANTARA ANTING APA APAL APEL API APUNG ARAB ARAH ARANG AREA ARENA ARIP ARISAN AROMA ARSIP ARWAH ASA ASAH ASAM ASAP ASAS ASIN ASLI ASMA ASPEK ASUH ATAP ATAS ATOM ATUR AUDIO AUDIT AWAL AWAM AWAN AWET AYAH AYAM AYUN AZAB " +
+"BABAK BABAT BABI BABU BACA BADAI BADAK BADAN BADUT BAGAI BAGAN BAGI BAGUS BAHAN BAHARI BAHAS BAHASA BAHAYA BAIK BAJA BAJAK BAJING BAJU BAKAL BAKAR BAKAT BAKAU BAKTI BAKU BAKUL BALA BALAI BALAS BALI BALIK BALOK BALON BAMBU BAN BANDA BANDAR BANDING BANG BANGAT BANGAU BANGKA BANGKAI BANGSA BANGUN BANJIR BANTAL BANTING BANTU BANYAK BAPAK BAPTIS BARA BARAK BARANG BARAT BARIS BARTER BARU BASAH BASAL BASI BASMI BATA BATAL BATANG BATAS BATERAI BATIK BATIN BATIS BATU BATUK BAU BAUR BAWA BAWAH BAWAL BAWANG BAYA BAYAM BAYAR BAYI BAYU BEBAN BEBAS BECAK BEDA BEDAH BEDAK BEKAS BEKU BELA BELAH BELAJAR BELAKANG BELALANG BELANJA BELAS BELI BELIT BELUT BENAM BENANG BENCANA BENDA BENDERA BENDUNG BENGKEL BENGKOK BENIH BENSIN BENTUK BENUA BERAS BERAT BERES BERITA BERKAS BERKAT BESAR BESI BESOK BETA BETINA BETIS BETON BETUL BIANG BIAS BIASA BIAYA BIBIR BICARA BIDANG BIDIK BIJAK BIJI BILA BILIK BINA BINATANG BINI BINTANG BIOLA BIRU BISA BISNIS BISU BISUL BIUS BLOK BOLA BOLEH BOLONG BOM BONEKA BONUS BOR BORONG BOTOL BUAH BUANG BUAS BUAT BUAYA BUBUK BUBUR BUDAK BUDAYA BUDI BUJANG BUKA BUKAN BUKIT BUKTI BUKU BULAN BULAT BULU BUMBU BUMI BUNGA BUNGKUS BUNTU BUNYI BURUK BURUNG BUSA BUSANA BUSUK BUSUR BUTA " +
+"CABAI CABANG CABUT CACAR CACAT CACING CADANG CADAR CAGAK CAHAYA CAIR CAKAP CAKAR CALON CAMBUK CAMPUR CANDI CANDU CANGKIR CAPAI CARI CAT CATAT CATUR CECAK CEDERA CEGAH CEK CEKUNG CELA CELAH CELANA CELUP CEMAS CEPAT CERAI CERDAS CERITA CERMAT CERMIN CERNA CETAK CILI CINCIN CINTA CIPTA CIRI CITA CITRA COBA COCOK COKELAT CONTOH CORAK CUACA CUCI CUKA CUKUP CUKUR CURAM CURI CUTI " +
+"DADA DADU DAERAH DAFTAR DAGANG DAGING DAGU DAHAGA DAHAN DAHI DAKI DAKWA DALAM DAMAI DAMPAK DANA DANAU DANGKAL DAPAT DAPUR DARA DARAH DARAT DARI DARURAT DASAR DASI DATA DATAR DAUN DAUR DAYA DAYUNG DEBIT DEBU DEKAT DEMAM DENAH DENDA DENDAM DENGAR DEPAN DERAP DERAS DERET DESA DESAIN DETIK DEWA DEWAN DEWI DIALOG DIAM DIDIK DIET DILAN DIMENSI DINAS DINDING DINGIN DINI DIREKSI DIRI DOA DOKTER DOKUMEN DOMBA DOMPET DORONG DOSA DOSEN DUA DUDUK DUGA DUIT DUKA DUKUNG DULANG DULU DUNIA DURI DURIAN DUTA " +
+"EDISI EFEK EFEKTIF EJA EKOR EKSPOR ELANG ELOK EMAS EMBUN EMOSI EMPAT EMPUK ENAM ENCER ENERGI EROSI ESAI ETIKA " +
+"FAJAR FAKTOR FAKTUR FANA FASE FASIH FIKSI FILM FILTER FINAL FISIK FOKUS FORMAL FORMAT FORMULA FOTO FUNGSI " +
+"GABUNG GADIS GAGAH GAGAL GAGAS GAIB GAJAH GAJI GALAK GALAU GALERI GAMBAR GAMPANG GANAS GANDA GANDUM GANGGU GANJIL GANTI GANTUNG GAPAI GARAM GARANG GARING GARIS GARPU GARUK GAS GAUL GAUN GAWAI GAWANG GAWAT GAYA GEDUNG GEJALA GELANG GELAP GELAR GELAS GELI GELOMBANG GEMA GEMBIRA GEMPA GEMUK GENAP GENDANG GENGGAM GENTA GENTING GERAK GERAM GERBANG GEREJA GESEK GESER GETAH GETAR GIAT GIGI GIGIT GILA GILIR GINJAL GITAR GIZI GLOBAL GOL GOLONG GORENG GOSOK GOTONG GRAFIK GRATIS GUDANG GUGUR GULA GULI GULUNG GUMPAL GUNA GUNDAH GUNTING GUNTUR GUNUNG GURAU GURIH GURUN GURU GUSI " +
+"HABIS HADAP HADIAH HADIR HAID HAJAT HAJI HAK HAKIM HALAL HALAMAN HALUS HAMA HAMBA HAMBAT HAMPIR HANCUR HANDUK HANGAT HANGUS HANTAM HANTAR HANTU HANYA HANYUT HAPUS HARAM HARAP HARGA HARI HARIMAU HARTA HARUM HARUS HASIL HASRAT HATI HAUS HAWA HEBAT HEMAT HENDAK HENING HENTI HERAN HEWAN HIAS HIBUR HIDANG HIDUNG HIDUP HIJAU HILANG HILIR HINA HINDAR HITAM HITUNG HIU HORMAT HOTEL HUBUNG HUJAN HUKUM HULU HURUF HUTAN " +
+"IBARAT IBLIS IBU IDE IDEAL IJAZAH IKAN IKAT IKLAN IKLIM IKUT ILMU IMAM IMAN IMPIAN INDAH INDEKS INDUK INDUSTRI INFEKSI INGAT INGIN INJAK INTI IRAMA IRIS IRIT ISI ISLAM ISTRI ISU ITIK IZIN " +
+"JADWAL JAGUNG JAHAT JAHIT JAJAR JAKET JAKSA JALAN JALUR JAM JAMIN JAMUR JANGAN JANGKAU JANJI JANTUNG JARAK JARANG JARI JARING JARUM JASAD JATUH JAUH JAWA JAWAB JAYA JEBAK JEJAK JELAS JELITA JELMA JEMBATAN JEMPOL JEMPUT JEMUR JENDELA JENIS JEPIT JERA JERAT JERNIH JERUK JIWA JODOH JUANG JUARA JUBAH JUDI JUDUL JUGA JUJUR JUMAT JUMLAH JUMPA JURANG JURUS " +
+"KABAR KABEL KABUR KABUT KACA KACANG KACAU KADAR KADER KAFAN KAFIR KAGET KAGUM KAIL KAIN KAIT KAKI KAKU KALAH KALAU KALBU KALENG KALI KALIMAT KALUNG KAMAR KAMBING KAMERA KAMPUNG KAMPUS KAMUS KANAN KANCIL KANCING KANDANG KANTOR KAPAL KAPAK KAPAS KAPUR KARAM KARANG KARAT KARDUS KARET KARTU KARYA KASAR KASIH KASUR KASUS KATA KATAK KATUN KAUM KAUS KAWAH KAWAL KAWAN KAWASAN KAWAT KAWIN KAYA KAYU KEBAL KEBUN KECIL KECOA KEDAI KEJAM KEJAR KEJUT KEKAL KELABU KELAS KELILING KELINCI KELOLA KELOMPOK KELUAR KELUARGA KEMAH KEMARAU KEMARI KEMAS KEMBALI KEMBANG KEMBAR KEMEJA KENAL KENCANG KENDALI KENTAL KENTANG KENYANG KEPAL KEPALA KERA KERAMIK KERANG KERAS KERETA KERING KERIS KERJA KERTAS KERUH KESAL KESAN KETAT KETUA KETUK KIAN KIBAR KIJANG KIKIR KILANG KILAS KILAT KILAU KIMIA KINCIR KINI KIPAS KIRA KIRIM KISAH KITA KITAB KLASIK KLIK KLINIK KLUB KOCOK KOLAM KOLEKSI KOLOM KOMIK KOMPAS KOMPOR KOMPUTER KONDISI KONSEP KONTAK KOPI KORAN KORBAN KOREK KOSONG KOTA KOTAK KOTOR KRISTAL KRITIK KUALITAS KUASA KUAT KUBAH KUBUR KUBUS KUCING KUDA KUDUS KUE KUKU KUKUH KULIT KUMPUL KUNANG KUNCI KUNING KUNO KUPAS KUPING KURA KURANG KURSI KURUS KUTIP KUTUB KUTU " +
+"LABA LABU LACI LADA LADANG LAGU LAHAN LAHIR LAIN LAJU LAKU LALAI LALAT LALU LAMA LAMBANG LAMBAT LAMPU LANCAR LANDAS LANGIT LANGKAH LANGSUNG LANJUT LANTAI LAPANGAN LAPAR LAPIS LAPOR LARI LARIS LARUT LATAR LATIH LAUK LAUT LAVA LAWAN LAYAK LAYAN LAYANG LAYAR LAYU LEBAH LEBAR LEBAT LEBIH LEDAK LEGA LEHER LEKAT LELAH LEMAH LEMAK LEMARI LEMAS LEMBAH LEMBAR LEMBUT LEMPAR LENGAN LENGKAP LENGKUNG LENYAP LEPAS LERENG LESU LETAK LETUS LEWAT LIANG LIAR LICIK LICIN LIDAH LIHAT LILIN LILIT LIMA LIMBAH LINDUNG LINGKAR LINTAS LIPAT LISTRIK LOBI LOGAM LOGIKA LOKAL LOKASI LOLOS LOMBA LOMPAT LORONG LUAR LUAS LUBANG LUCU LUDAH LUKA LUKIS LULUS LUMBER LUMPUH LUMPUR LUMUT LUNAK LUNAS LUPA LURUS LUSA LUSIN " +
+"MAAF MABUK MACAN MACET MADU MAHAL MAHIR MAHKOTA MAIN MAJU MAKA MAKAM MAKAN MAKLUM MAKMUR MAKNA MAKSUD MALAM MALANG MALAS MALU MAMPU MANA MANIS MANTAP MANTEL MANTRA MANUSIA MARAH MARET MARGA MARKAS MASA MASAK MASALAH MASIH MASING MASUK MATA MATAHARI MATANG MATI MAU MAUT MAWAR MAYAT MEDALI MEDAN MEDIA MEDIS MEJA MEKAR MELATI MENANG MENARA MENDUNG MENTERI MENU MERAH MEREKA MERIAM MERPATI MESIN MESKIPUN MESTI MEWAH MILIK MILITER MIMPI MINAT MINERAL MINGGU MINIMAL MINTA MINUM MINYAK MIRIP MISAL MISKIN MISTERI MITOS MOBIL MODAL MODEL MODERN MOGOK MOHON MOTOR MUDA MUDAH MUDIK MUKA MULAI MULIA MULUT MUNCUL MUNDUR MURAH MURID MURKA MURNI MUSANG MUSEUM MUSIK MUSIM MUSNAH MUSUH MUTIARA MUTLAK MUTU " +
+"NADA NADI NAFAS NAFSU NAGA NAIK NAKAL NAMA NANAS NANTI NAPAS NASI NASIB NASKAH NEGARA NEGERI NENEK NERAKA NETRAL NIKAH NIKMAT NILAI NODA NOL NOMOR NORMA NORMAL NOVEL NUKLIR NYALA NYAMAN NYAMUK NYANYI NYATA NYAWA " +
+"OBAT OBJEK OBOR ODOL OJEK OKNUM OLAHRAGA OLEH OLES OMBAK OMONG OPERASI OPINI OPSI OPTIK ORANG ORANGTUA ORBIT ORDER ORGAN ORKESTRA OTAK OTOMATIS OTOT " +
+"PACAR PACU PADA PADAM PADANG PADAT PADI PAGAR PAGI PAHAM PAHA PAHIT PAHLAWAN PAJAK PAKAI PAKAN PAKET PAKSA PAKU PALING PALSU PALU PAMAN PAMER PAMIT PANAH PANAS PANCING PANDAI PANDANG PANDU PANEN PANGERAN PANGGIL PANGGUNG PANGKAT PANJANG PANTAI PANTAS PAPAN PARAH PARIT PARKIR PARU PASAK PASAL PASANG PASAR PASIF PASIR PASTI PASUKAN PATAH PATUH PATUNG PAUS PAYUNG PECAH PECUT PEDANG PEDAS PEDULI PEGANG PEGAWAI PEKAN PELAN PELANGI PELATIH PELUK PELURU PENA PENDEK PENDETA PENSIUN PENTAS PENTING PENUH PEPAYA PERAHU PERAK PERANG PERCAYA PERGI PERIKSA PERKASA PERMATA PERNAH PERSEGI PERTAMA PERUT PESAN PESAWAT PESISIR PESTA PETAK PETANG PETANI PETI PETIK PETIR PIANO PIDATO PIHAK PIJAR PIKIR PIKNIK PIKUL PILIH PIMPIN PINANG PINDAH PINGGANG PINGGIR PINJAM PINTAR PINTU PIPA PIPI PIRING PISAH PISANG PISAU PISTOL PITA PLANET PLASTIK POHON POJOK POKOK POLA POLISI POLITIK POMPA PONDOK POPULER POROS PORSI POS POSISI POTONG POTRET PRAKTEK PRIA PRIBADI PRINSIP PRODUK PROGRAM PROYEK PUASA PUBLIK PUCAT PUISI PUJA PUJI PUKUL PULANG PULAU PULIH PULPEN PUNCAK PUNGGUNG PUPUK PURA PURNAMA PUSAT PUSING PUTAR PUTIH PUTRA PUTRI PUTUS " +
+"RABU RACUN RADAR RAGA RAGU RAHASIA RAHIM RAIH RAJA RAJIN RAKIT RAKSASA RAKYAT RAMAI RAMAL RAMBUT RAMPAS RANCANG RANGKAI RANJANG RANSAI RANSEL RANTAI RANTING RAPAT RAPI RAPUH RASA RASIO RATA RATU RAUNG RAWA RAWAT RAYA RAYAP REAKSI REBUT REKOR REMAH REMBULAN REMPAH RENCANA RENANG RENDAH RESEP RESMI RESTU RETAK REZEKI RIANG RIBU RIBUT RINDU RINGAN RINTANG RISIKO RIWAYAT ROBEK ROBOH RODA ROH ROKET ROKOK ROMPI ROTI RUANG RUAS RUGI RUKUN RUMAH RUMIT RUMPUN RUMPUT RUNCING RUNTUH RUPA RUSAK RUTE RUTIN " +
+"SAAT SABAR SABTU SABUN SADAR SAHABAT SAHAM SAING SAJAK SAKIT SAKSI SAKU SALAH SALAM SALJU SAMA SAMAR SAMBAL SAMBUNG SAMBUT SAMPAH SAMPAI SAMPING SAMUDRA SANA SANDAL SANDI SANGAT SANGKA SANGKAR SAPATU SAPI SAPU SARANG SARAPAN SARI SARUNG SASAR SASTRA SATU SAUDARA SAWAH SAYANG SAYAP SAYUR SEBAB SEBELUM SEBENTAR SEBUT SEDANG SEDAP SEDERHANA SEDIA SEDIH SEDIKIT SEGAR SEGI SEHAT SEJAK SEJUK SEKALI SEKARANG SEKOLAH SEKOP SELAIN SELALU SELAM SELAMAT SELATAN SELESAI SELIMUT SELURUH SEMAK SEMANGAT SEMBILAN SEMBUH SEMBUNYI SEMPIT SEMPURNA SEMUA SEMUT SENANG SENAPAN SENDI SENDIRI SENDOK SENI SENIN SENJATA SENJA SENTUH SENYUM SEPAK SEPATU SEPEDA SEPI SERAGAM SERAH SERAM SERANG SERANGGA SERAT SERBU SERIUS SERTA SESUAI SETELAH SETIA SETIAP SEWA SIAL SIANG SIAP SIAPA SIBUK SIDANG SIFAT SIHIR SIKAP SIKLUS SIKSA SIKU SILANG SILAT SILAU SIMPAN SIMPANG SINAR SINGA SINGKAT SINI SINYAL SIPIL SIPUT SIRAM SIRNA SISA SISI SISIR SISTEM SISWA SITUASI SKOR SOAL SOGOK SOKONG SOLUSI SOMBONG SOPAN SORE SOROT SOSIAL SPESIAL SPION STASIUN STATUS STIKER STOK STRATEGI SUARA SUAMI SUBUR SUCI SUDAH SUDUT SUHU SUKA SUKMA SUKU SULIT SULTAN SUMBER SUMPAH SUMUR SUNGAI SUNGGUH SUNTIK SUNYI SUPAYA SURAT SURGA SURUH SURUT SUSAH SUSU SUSUN SUTRA SYARAT SYUKUR " +
+"TAAT TABAH TABRAK TABUNG TABUR TADAH TAHAN TAHAP TAHI TAHU TAHUN TAJAM TAKDIR TAKUT TAKZIM TALI TAMAK TAMAN TAMAT TAMBAH TAMBANG TAMPAK TAMPAN TAMPIL TAMU TANAH TANAM TANDA TANDING TANDUK TANGAN TANGGA TANGGAL TANGGUNG TANGKAP TANGKAS TANGKI TANI TANPA TANYA TAPAK TARGET TARI TARIK TARING TARUH TARUNG TAS TATA TATAP TAWAR TEBAL TEBANG TEBAS TEBING TEBUS TEGAK TEGANG TEGAR TEGAS TEGUH TEGUR TEH TEKA TEKAD TEKAN TEKUN TELAGA TELAH TELAN TELAT TELITI TELUR TEMAN TEMBAGA TEMBAK TEMBOK TEMPAT TEMPUR TEMU TENANG TENDA TENDANG TENGGELAM TENGGARA TENGOK TENTANG TENTARA TENTU TEPAT TEPI TEPUK TEPUNG TERANG TERATUR TERBANG TERBIT TERIAK TERIMA TERJUN TERNAK TEROR TERTIB TERUS TETAP TETES TEWAS TIADA TIANG TIAP TIBA TIDAK TIDUR TIGA TIKAM TIKAR TIKET TIKUS TIMAH TIMBANG TIMBUL TIMUR TINDAK TINDIH TINGGAL TINGGI TINGKAH TINJU TINTA TIPIS TIPU TIRAI TIRU TITIK TIUP TOKOH TOKO TOLAK TOLONG TOMAT TOMBAK TOMBOL TONGKAT TOPENG TOPI TOPIK TOTAL TRADISI TREN TRUK TUA TUAN TUANG TUAS TUBUH TUDUH TUGAS TUHAN TUJUAN TUJUH TUKANG TUKAR TULANG TULEN TULIS TUMBUH TUMBUK TUMPAH TUMPANG TUMPUL TUNAI TUNAS TUNDA TUNDUK TUNGGU TUNGKOR TUNTUT TUPAI TURUN TURUT TUSUK TUTUP TUTUR " +
+"UANG UAP UBAH UBAN UBI UBIN UCAP UDANG UDARA UJI UJUNG UKIR UKUR ULANG ULAR ULAT ULUNG UMAT UMBI UMPAN UMUM UMUR UNDANG UNDI UNGGUL UNGGUN UNGKAP UNGU UNIK UNSUR UNTA UNTUNG UPAYA URAI URAT URUS USAH USAHA USIA USIR UTAMA UTANG UTARA UTUH UTUS " +
+"VAKSIN VALUTA VAMPIR VARIAN VARIASI VAS VEKTOR VENTILASI VOLI " +
+"WADAH WAJAH WAJAN WAJAR WAJIB WAKIL WAKTU WALAU WANITA WARAS WARGA WARNA WARTA WARUNG WASIAT WASIT WASPADA WATAK WAYANG WIBAWA WILAYAH WIRA WISATA WISUDA WUJUD " +
+"YAKIN YATIM YOGA ZAMAN ZAMRUD ZONA";
+
+const DICTIONARY = new Set(RAW_WORDS.concat(EXTRA_WORDS).concat(DICT_PACK.split(" ")));
+
+const HERO_CATALOG = {
+  warrior: {
+    name: "Ksatria",
+    spriteKey: "warrior",
+    role: "Warrior",
+    maxHp: 155,
+    maxMp: 30,
+    baseX: 520,
+    baseY: 160,
+    themes: [
+      "PEDANG","TEBAS","TIKAM","BAJA","BESI","SERANG","LAWAN","KERAS","TAJAM",
+      "PERISAI","TOMBOK","ZIRAH","HELM","KSATRIA","PASUKAN","TENTARA","MENANG",
+      "SLASH","SWORD","SHIELD","POWER","TOMBAK","KAPAK","GADA","PALU","KERIS","BERANI","PERKASA"
+    ],
+    skills: [
+      {
+        name: "Tebas Pedang",
+        mpCost: 0,
+        basePower: 28,
+        desc: "Tebasan pedang berdaya serang fisik langsung ke target.",
+        handler: "SINGLE_ATTACK",
+        projectile: { type: "slash", color: "#f8fafc", trailColor: "#38bdf8", size: 14 },
+        options: { particleColor: "#ef4444" }
+      },
+      {
+        name: "Benteng Perisai",
+        mpCost: 10,
+        basePower: 45,
+        desc: "Hantaman perisai berat (+ Stun 1 giliran ke musuh sasaran).",
+        handler: "SINGLE_ATTACK",
+        projectile: { type: "slash", color: "#f8fafc", trailColor: "#38bdf8", size: 14 },
+        options: { stun: true, particleColor: "#ef4444" }
+      }
+    ]
+  },
+  ranger: {
+    name: "Pemanah",
+    spriteKey: "ranger",
+    role: "Ranger",
+    maxHp: 110,
+    maxMp: 45,
+    baseX: 635,
+    baseY: 160,
+    themes: [
+      "PANAH","BUSUR","PEMBURU","BIDIK","TEMBAK","CEPAT","ANGIN","HUTAN","POHON",
+      "DAUN","BURUNG","RUSA","ELANG","MATA","DURI","RACUN","TAJAM","JAUH"
+    ],
+    skills: [
+      {
+        name: "Panah Beracun",
+        mpCost: 6,
+        basePower: 30,
+        desc: "Tembakan panah akurat menusuk & meracuni target musuh.",
+        handler: "SINGLE_ATTACK",
+        projectile: { type: "arrow", color: "#4ade80", trailColor: "#15803d", size: 12 },
+        options: { poisonTurns: 2, particleColor: "#4ade80" }
+      },
+      {
+        name: "Hujan Panah",
+        mpCost: 14,
+        basePower: 36,
+        desc: "Hujani seluruh musuh dengan tembakan panah beruntun.",
+        handler: "AOE_ATTACK",
+        projectile: { type: "arrow", color: "#facc15", trailColor: "#eab308", size: 14, fromTop: true },
+        options: { particleColor: "#facc15" }
+      }
+    ]
+  },
+  mage: {
+    name: "Penyihir",
+    spriteKey: "mage",
+    role: "Mage",
+    maxHp: 85,
+    maxMp: 80,
+    baseX: 745,
+    baseY: 160,
+    themes: [
+      "API","KILAT","PETIR","SIHIR","ANGIN","BEKU","PANAS","ICE","FIRE","BOLT",
+      "MAGIC","TOPAN","BINTANG","ILMU","ASAP","BARA","NYALA","BAKAR","SALJU",
+      "MANTRA","JAMPI","TONGKAT","PENYIHIR","STAR"
+    ],
+    skills: [
+      {
+        name: "Bola Api",
+        mpCost: 12,
+        basePower: 34,
+        desc: "Sihir api menyala membakar seluruh musuh sekaligus.",
+        handler: "AOE_ATTACK",
+        projectile: { type: "fireball", color: "#f97316", trailColor: "#ef4444", size: 20 },
+        options: { particleColor: "#f97316" }
+      },
+      {
+        name: "Petir Halilintar",
+        mpCost: 18,
+        basePower: 60,
+        desc: "Sambaran petir dahsyat terarah ke satu target pilihan.",
+        handler: "SINGLE_ATTACK",
+        projectile: { type: "lightning", color: "#67e8f9", trailColor: "#a855f7", size: 16, fromTop: true },
+        options: { labelSuffix: "(PETIR)", particleColor: "#38bdf8", particleCount: 30 }
+      }
+    ]
+  },
+  cleric: {
+    name: "Tabib",
+    spriteKey: "cleric",
+    role: "Cleric",
+    maxHp: 105,
+    maxMp: 60,
+    baseX: 855,
+    baseY: 160,
+    themes: [
+      "SEHAT","OBAT","RAMUAN","SUCI","CAHAYA","HIDUP","JIWA","DEWA","DEWI",
+      "TABIB","HEAL","SEMBUH","PULIH","BERKAT","LEMBUT","BAIK","PAGI","DOA","RAWAT","OBATI","LINDUNG"
+    ],
+    skills: [
+      {
+        name: "Gada Cahaya",
+        mpCost: 6,
+        basePower: 25,
+        desc: "Hantam target + Pulihkan HP rekan dengan sisa HP terendah.",
+        handler: "SMITE_HEAL",
+        projectile: { type: "slash", color: "#facc15", trailColor: "#f59e0b", size: 14 },
+        options: { particleColor: "#facc15", healBase: 20 }
+      },
+      {
+        name: "Doa Pemulihan",
+        mpCost: 16,
+        basePower: 38,
+        desc: "Pulihkan HP seluruh party berdasarkan panjang rangkaian kata.",
+        handler: "AOE_HEAL",
+        options: {}
+      }
+    ]
+  }
+};
+
+const THEMES = {};
+Object.values(HERO_CATALOG).forEach(h => {
+  THEMES[h.spriteKey] = new Set(h.themes || []);
+});
+
+const ENEMY_CATALOG = {
+  slime_acid: {
+    name: "Slime Asam",
+    spriteKey: "slime",
+    role: "Minion",
+    maxHp: 85,
+    actions: [
+      { type: "ATTACK", weight: 70, powerMod: -2, desc: (v) => `💧 Asam ${v}` },
+      { type: "POISON_SPIT", weight: 30, desc: () => `☠️ Racun Ubin` }
+    ]
+  },
+  orc_brute: {
+    name: "Orc Brute",
+    spriteKey: "orc",
+    role: "Brute",
+    maxHp: 160,
+    actions: [
+      { type: "ATTACK", weight: 100, powerMod: 0, desc: (v) => `⚔️ ${v}` }
+    ]
+  },
+  drakonit: {
+    name: "Drakonit",
+    spriteKey: "drakonit",
+    role: "Caster",
+    maxHp: 110,
+    actions: [
+      { type: "MAGIC_AOE", weight: 65, powerMod: 0, desc: (v) => `⚡ ${v} AoE` },
+      { type: "DOOM", weight: 35, desc: () => `💣 Kutuk Bom` }
+    ]
+  },
+  golem_rock: {
+    name: "Golem Batu",
+    spriteKey: "golem",
+    role: "Tank",
+    maxHp: 240,
+    actions: [
+      { type: "ATTACK", weight: 60, powerMod: 3, desc: (v) => `🪨 Hantam ${v}` },
+      { type: "STUN_ATTACK", weight: 40, powerMod: 0, desc: (v) => `💫 Gempa ${v}` }
+    ]
+  },
+  orc_general: {
+    name: "Jenderal Orc",
+    spriteKey: "orc",
+    role: "Boss",
+    maxHp: 280,
+    actions: [
+      { type: "ATTACK", weight: 70, powerMod: 4, desc: (v) => `⚔️ ${v}` },
+      { type: "STUN_ATTACK", weight: 30, powerMod: 0, desc: (v) => `💫 Gada ${v}` }
+    ]
+  },
+  ancient_mage: {
+    name: "Penyihir Kuno",
+    spriteKey: "drakonit",
+    role: "Caster",
+    maxHp: 180,
+    actions: [
+      { type: "MAGIC_AOE", weight: 65, powerMod: 3, desc: (v) => `⚡ ${v} AoE` },
+      { type: "DOOM", weight: 35, desc: () => `💣 Kutuk Bom` }
+    ]
+  },
+  ancient_dragon: {
+    name: "Naga Api Kuno",
+    spriteKey: "wyrm",
+    role: "Boss",
+    maxHp: 380,
+    actions: [
+      { type: "ATTACK", weight: 45, powerMod: 5, desc: (v) => `🔥 Cakar ${v}` },
+      { type: "MAGIC_AOE", weight: 35, powerMod: 4, desc: (v) => `🌋 Nafas Api` },
+      { type: "DOOM", weight: 20, desc: () => `💣 Bom Kuno` }
+    ]
+  },
+  dark_wyrm: {
+    name: "Raja Naga Kegelapan",
+    spriteKey: "wyrm",
+    role: "Boss",
+    maxHp: 520,
+    actions: [
+      { type: "ATTACK", weight: 40, powerMod: 7, desc: (v) => `💀 Robek ${v}` },
+      { type: "MAGIC_AOE", weight: 35, powerMod: 5, desc: (v) => `⚡ Badai Gelap` },
+      { type: "STUN_ATTACK", weight: 25, powerMod: 3, desc: (v) => `💫 Raungan Maut` }
+    ]
+  }
+};
+
+const WAVES = [
+  ["slime_acid", "orc_brute"],
+  ["orc_general", "drakonit"],
+  ["golem_rock", "ancient_mage"],
+  ["ancient_dragon", "orc_brute"],
+  ["dark_wyrm", "golem_rock"]
+];
+
+const ALL_RELICS = [
+  {
+    id: "quill",
+    name: "Pena Emas",
+    icon: "🪶",
+    desc: "Kata 5+ huruf memulihkan 14 HP ke seluruh party.",
+    type: "HEAL_ON_5"
+  },
+  {
+    id: "vampire",
+    name: "Taring Vampir",
+    icon: "🩸",
+    desc: "Setiap serangan fisik memulihkan HP sebesar 25% dari total damage.",
+    type: "LIFESTEAL"
+  },
+  {
+    id: "magma",
+    name: "Inti Magma",
+    icon: "🌋",
+    desc: "Kata berawalan vokal (A,I,U,E,O) memberi +14 Fire DMG ekstra.",
+    type: "VOWEL_FIRE"
+  },
+  {
+    id: "martyr",
+    name: "Genta Martir",
+    icon: "🔔",
+    desc: "Bila ada rekan HP <35%, seluruh efek skill melonjak +40%.",
+    type: "CRISIS_BOOST"
+  },
+  {
+    id: "compass",
+    name: "Kompas Vokal",
+    icon: "🧭",
+    desc: "Acak huruf menjamin minimal 6 huruf vokal di papan ubin.",
+    type: "MORE_VOWELS"
+  },
+  {
+    id: "grail",
+    name: "Cawan Suci",
+    icon: "🏆",
+    desc: "Setiap awal giliran, semua hero memulihkan +4 MP tambahan.",
+    type: "TURN_MP"
+  }
+];
+
+class Entity {
+  constructor(name, spriteKey, role, maxHp, maxMp, x, y, isHero, catalogKey = null) {
+    this.name = name;
+    this.spriteKey = spriteKey;
+    this.role = role;
+    this.maxHp = maxHp;
+    this.hp = maxHp;
+    this.maxMp = maxMp;
+    this.mp = maxMp;
+    this.x = x;
+    this.y = y;
+    this.baseX = x;
+    this.baseY = y;
+    this.isHero = isHero;
+    this.catalogKey = catalogKey;
+    this.animOffset = 0;
+    this.isActing = false;
+    this.stunned = false;
+    this.frozen = false;
+    this.burnTurns = 0;
+    this.poisonTurns = 0;
+    this.intent = null;
+    this.skills = [];
+  }
+}
+
+const heroes = Object.keys(HERO_CATALOG).map(key => {
+  const data = HERO_CATALOG[key];
+  const ent = new Entity(data.name, data.spriteKey, data.role, data.maxHp, data.maxMp, data.baseX, data.baseY, true, key);
+  ent.skills = data.skills || [];
+  return ent;
+});
+
+const HERO_SKILLS = heroes.map(h => h.skills);
+
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+const STATE = {
+  turnPhase: "TITLE",
+  turnId: 0,
+  boardLocked: false,
+  boardLockId: 0,
+  projectileLedger: { actionId: null, pending: 0 },
+  activeHeroIndex: 0,
+  selectedSkillIndex: 0,
+  selectedEnemyIndex: 0,
+  currentWord: "",
+  wordAnalysis: null,
+  selectedChain: [],
+  isDragging: false,
+  particles: [],
+  damageNumbers: [],
+  projectiles: [],
+  wave: 1,
+  shuffles: 3,
+  rushGauge: 35,
+  partyGuardTurns: 0,
+  overSince: 0,
+  animTimer: 0,
+  screenShake: 0,
+  hitFreezeTimer: 0,
+  crtEnabled: true,
+  relics: [],
+  offeredRelics: [],
+  campfireSparks: [],
+  transitionTimer: 0,
+  walkDirection: "IN",
+  stats: {
+    wordsCount: 0,
+    bestWord: "-",
+    bestWordDmg: 0,
+    totalDamageDealt: 0
+  }
+};
+
+function startWalkInTransition() {
+  STATE.turnPhase = "HERO_WALK_IN";
+  STATE.walkDirection = "IN";
+  STATE.transitionTimer = performance.now();
+  heroes.forEach((h, idx) => {
+    h.x = canvas.width + 60 + idx * 85;
+    h.y = h.baseY;
+    h.isActing = false;
+    h.animOffset = 0;
+  });
+}
+
+function startWalkOutTransition() {
+  STATE.turnPhase = "HERO_WALK_OUT";
+  STATE.walkDirection = "OUT";
+  STATE.transitionTimer = performance.now();
+}
+
+function updateHeroWalking(dt) {
+  const timeScale = Math.min(2.5, dt / 16.66);
+  const walkSpeed = 3.6 * timeScale;
+
+  if (STATE.turnPhase === "HERO_WALK_IN") {
+    let allInPosition = true;
+    heroes.forEach((h) => {
+      if (h.hp > 0 || STATE.wave === 1) {
+        if (h.x > h.baseX) {
+          h.x = Math.max(h.baseX, h.x - walkSpeed);
+          allInPosition = false;
+        }
+      }
+    });
+
+    if (allInPosition) {
+      STATE.turnPhase = "HERO_INPUT";
+      STATE.activeHeroIndex = Math.max(0, heroes.findIndex(h => h.hp > 0));
+      STATE.selectedSkillIndex = 0;
+      normalizeSelectedTarget();
+      refreshEnemyIntents();
+      spawnDamageNumber(canvas.width / 2, 190, `⚔️ RUANG ${STATE.wave}: BERSIAP BERTARUNG! ⚔`, "#facc15", true);
+    }
+  } else if (STATE.turnPhase === "HERO_WALK_OUT") {
+    let allExited = true;
+    heroes.forEach((h) => {
+      if (h.hp > 0) {
+        h.x -= walkSpeed * 1.25;
+        if (h.x > -80) {
+          allExited = false;
+        }
+      }
+    });
+
+    if (allExited) {
+      if (STATE.wave >= WAVES.length) {
+        STATE.turnPhase = "VICTORY";
+        STATE.overSince = performance.now();
+      } else {
+        triggerCampfireIntermission();
+      }
+    }
+  }
+}
+
+function changeMp(entity, delta) {
+  if (!entity) return 0;
+  const before = entity.mp;
+  entity.mp = Math.max(0, Math.min(entity.maxMp, entity.mp + Math.round(delta)));
+  return entity.mp - before;
+}
+
+function beginAction() {
+  STATE.turnId++;
+  STATE.projectileLedger = { actionId: STATE.turnId, pending: 0 };
+  return STATE.turnId;
+}
+
+function isActionValid(id) {
+  return id === STATE.turnId && !isCombatFinished();
+}
+
+function isCombatFinished() {
+  return STATE.turnPhase === "GAME_OVER" || STATE.turnPhase === "VICTORY";
+}
+
+function canPlayerAct() {
+  return STATE.turnPhase === "HERO_INPUT" && !STATE.boardLocked && !isCombatFinished();
+}
+
+function normalizeSelectedTarget() {
+  if (enemies[STATE.selectedEnemyIndex] && enemies[STATE.selectedEnemyIndex].hp > 0) return;
+  const firstAlive = enemies.findIndex(e => e.hp > 0);
+  STATE.selectedEnemyIndex = firstAlive >= 0 ? firstAlive : 0;
+}
+
+function getSelectedTarget() {
+  normalizeSelectedTarget();
+  return enemies[STATE.selectedEnemyIndex] && enemies[STATE.selectedEnemyIndex].hp > 0
+    ? enemies[STATE.selectedEnemyIndex]
+    : null;
+}
+
+function refreshEnemyIntents() {
+  rollEnemyIntents(enemies, STATE.wave);
+}
+
+function rollEnemyIntents(enemyList, wave) {
+  const currentWave = wave !== undefined ? wave : STATE.wave;
+  enemyList.forEach(en => {
+    if (en.hp <= 0) return;
+    if (en.frozen) {
+      en.intent = { type: "FROZEN", desc: "❄️ Membeku" };
+      return;
+    }
+    if (en.stunned) {
+      en.intent = { type: "STUN", desc: "💫 Pusing" };
+      return;
+    }
+
+    const catalog = ENEMY_CATALOG[en.catalogKey] || {};
+    const actions = catalog.actions || [
+      { type: "ATTACK", weight: 100, powerMod: 0, desc: (v) => `⚔️ ${v}` }
+    ];
+
+    const totalWeight = actions.reduce((sum, act) => sum + (act.weight || 1), 0);
+    let roll = Math.random() * totalWeight;
+    let chosen = actions[0];
+    for (const act of actions) {
+      roll -= (act.weight || 1);
+      if (roll <= 0) {
+        chosen = act;
+        break;
+      }
+    }
+
+    const isCaster = en.role === "Caster" || chosen.type === "MAGIC_AOE";
+    const basePwr = getEnemyAttackPower(currentWave, isCaster);
+    const pwr = Math.max(1, basePwr + (chosen.powerMod || 0));
+
+    en.intent = {
+      type: chosen.type,
+      val: pwr,
+      desc: chosen.desc ? chosen.desc(pwr) : `⚔ ${pwr}`
+    };
+  });
+}
+
+function makeWave(n) {
+  const xs = [320, 180];
+  const waveKeys = WAVES[n - 1] || WAVES[WAVES.length - 1];
+  const list = waveKeys.map((key, i) => {
+    const data = ENEMY_CATALOG[key] || { name: "Monster", spriteKey: "orc", role: "Brute", maxHp: 150 };
+    return new Entity(data.name, data.spriteKey, data.role, data.maxHp, 0, xs[i] || (320 - i * 140), 160, false, key);
+  });
+  rollEnemyIntents(list, n);
+  return list;
+}
+
+let enemies = makeWave(1);
+
+function applyDamage(source, target, amount, options = {}) {
+  if (!target || target.hp <= 0) return 0;
+
+  const before = target.hp;
+  let finalDamage = Math.max(0, Math.round(amount));
+
+  if (options.damageMultiplier) {
+    finalDamage = Math.round(finalDamage * options.damageMultiplier);
+  }
+
+  if (target.isHero && STATE.partyGuardTurns > 0) {
+    finalDamage = Math.round(finalDamage * BALANCE.guardMultiplier);
+  }
+
+  target.hp = Math.max(0, target.hp - finalDamage);
+  const actualDamage = before - target.hp;
+
+  if (source && source.isHero) {
+    STATE.stats.totalDamageDealt += actualDamage;
+
+    if (STATE.relics.some(r => r.id === "vampire") && actualDamage > 0) {
+      const healAmt = Math.round(actualDamage * BALANCE.vampireLeechPercent);
+      if (healAmt > 0) {
+        applyHealing(source, source, healAmt, { yOffset: 65 });
+      }
+    }
+  }
+
+  const label = options.label || (actualDamage > 0 ? `-${actualDamage}` : "MISS");
+  const color = options.color || (options.isCrit ? "#fbbf24" : target.isHero ? "#ef4444" : "#ffffff");
+  spawnDamageNumber(target.x, target.y - (options.yOffset || 30), label, color);
+  spawnParticles(target.x, target.y, options.particleColor || (target.isHero ? "#ef4444" : "#f97316"), options.particleCount || 20);
+
+  if (options.isCrit) {
+    STATE.hitFreezeTimer = 65;
+    STATE.screenShake = 12;
+  } else if (finalDamage > 16) {
+    STATE.screenShake = Math.max(STATE.screenShake, 6);
+  }
+
+  if (target.hp <= 0) {
+    target.isActing = false;
+    target.animOffset = 0;
+    if (!target.isHero) {
+      target.stunned = false;
+      target.frozen = false;
+      target.burnTurns = 0;
+      target.poisonTurns = 0;
+      target.intent = null;
+      normalizeSelectedTarget();
+    } else {
+      if (heroes.every(h => h.hp <= 0)) {
+        STATE.turnPhase = "GAME_OVER";
+        STATE.overSince = performance.now();
+        beginAction();
+      }
+    }
+  }
+
+  return actualDamage;
+}
+
+function applyHealing(source, target, amount, options = {}) {
+  if (!target || target.hp <= 0) return 0;
+  const before = target.hp;
+  target.hp = Math.min(target.maxHp, target.hp + Math.max(0, Math.round(amount)));
+  const actualHealed = target.hp - before;
+
+  if (actualHealed > 0) {
+    spawnDamageNumber(target.x, target.y - (options.yOffset || 30), `+${actualHealed}`, "#4ade80");
+    spawnParticles(target.x, target.y, "#4ade80", 18);
+  }
+  return actualHealed;
+}
+
+function clearDoomTile(tile) {
+  tile.special = "NORMAL";
+  tile.doomCount = 0;
+}
+
+function tickDoomTiles() {
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      const tile = GRID.board[r][c];
+      if (tile.special === "DOOM" && tile.doomCount > 0) {
+        tile.doomCount--;
+        if (tile.doomCount <= 0) {
+          explodeDoomTile(tile);
+        }
+      }
+    }
+  }
+}
+
+function explodeDoomTile(tile) {
+  clearDoomTile(tile);
+  AudioSys.playExplode();
+  STATE.screenShake = 16;
+  const aliveHeroes = heroes.filter(h => h.hp > 0);
+  if (aliveHeroes.length > 0) {
+    const randomHero = aliveHeroes[Math.floor(Math.random() * aliveHeroes.length)];
+    applyDamage(null, randomHero, BALANCE.doomDamage, {
+      color: "#ef4444",
+      particleColor: "#f97316",
+      particleCount: 28,
+      yOffset: 60
+    });
+  }
+}
+
+function finishHeroAction(actionId) {
+  if (!isActionValid(actionId) || isCombatFinished()) return;
+  const hero = heroes[STATE.activeHeroIndex];
+  if (hero) {
+    hero.animOffset = 0;
+    hero.isActing = false;
+  }
+  setTimeout(() => {
+    if (!isActionValid(actionId) || isCombatFinished()) return;
+    advanceTurn();
+  }, 280);
+}
+
+function createProjectile(config) {
+  if (config.countPending !== false) {
+    if (STATE.projectileLedger.actionId === config.actionId) {
+      STATE.projectileLedger.pending++;
+    } else {
+      STATE.projectileLedger = { actionId: config.actionId, pending: 1 };
+    }
+  }
+  STATE.projectiles.push({
+    x: config.x,
+    y: config.y,
+    targetX: config.targetX,
+    targetY: config.targetY,
+    color: config.color,
+    trailColor: config.trailColor,
+    size: config.size || 14,
+    type: config.type || "slash",
+    actionId: config.actionId,
+    onHit: config.onHit
+  });
+}
+
+function resolveProjectile(p) {
+  if (isActionValid(p.actionId) && typeof p.onHit === "function") {
+    p.onHit();
+  }
+  if (STATE.projectileLedger.actionId === p.actionId) {
+    STATE.projectileLedger.pending = Math.max(0, STATE.projectileLedger.pending - 1);
+    if (STATE.projectileLedger.pending === 0 && isActionValid(p.actionId) && STATE.turnPhase === "HERO_ACTION") {
+      finishHeroAction(p.actionId);
+    }
+  }
+}
+
+const VOWELS = "AAAAAEEEEIIIIOOOOUUU";
+const CONSONANTS = "BBCCDDDFFGGHHHJKKLLLMMMNNNNNPPQRRRRSSSSTTTTTWWYVZZX";
+
+function getRandomTileSpecial() {
+  const roll = Math.random();
+  if (roll < 0.06) return "FIRE";
+  if (roll < 0.11) return "FROST";
+  if (roll < 0.16) return "LIGHTNING";
+  if (roll < 0.20) return "STAR";
+  if (roll < 0.26) return "MANA";
+  if (roll < 0.31) return "SHIELD";
+  if (roll < 0.35) return "POISON";
+  return "NORMAL";
+}
+
+function getRandomLetter(forceVowel = false) {
+  if (forceVowel) return VOWELS[Math.floor(Math.random() * VOWELS.length)];
+  const pool = Math.random() < 0.28 ? VOWELS : CONSONANTS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+const GRID = {
+  rows: 4,
+  cols: 4,
+  tileSize: 56,
+  gap: 8,
+  startX: 35,
+  startY: 375,
+  board: []
+};
+
+function enforceVowelCompass() {
+  if (!STATE || !STATE.relics.some(r => r.id === "compass")) return;
+  let vowelPositions = [];
+  let consonantPositions = [];
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      if (VOWELS.includes(GRID.board[r][c].char)) vowelPositions.push({ r, c });
+      else consonantPositions.push({ r, c });
+    }
+  }
+  const needed = 6 - vowelPositions.length;
+  if (needed > 0 && consonantPositions.length > 0) {
+    const shuffled = consonantPositions.sort(() => Math.random() - 0.5);
+    for (let i = 0; i < Math.min(needed, shuffled.length); i++) {
+      const pos = shuffled[i];
+      GRID.board[pos.r][pos.c].char = getRandomLetter(true);
+    }
+  }
+}
+
+function initGrid() {
+  GRID.board = [];
+  for (let r = 0; r < GRID.rows; r++) {
+    GRID.board[r] = [];
+    for (let c = 0; c < GRID.cols; c++) {
+      GRID.board[r][c] = {
+        char: getRandomLetter((r + c) % 4 === 0),
+        special: getRandomTileSpecial(),
+        doomCount: 0,
+        animOffsetY: - (GRID.rows - r) * 70,
+        vy: 0
+      };
+    }
+  }
+  enforceVowelCompass();
+}
+
+function replenishGridCascading(usedCoords) {
+  STATE.boardLocked = true;
+  const lockId = ++STATE.boardLockId;
+  const toRemove = Array.from({ length: GRID.rows }, () => Array(GRID.cols).fill(false));
+  usedCoords.forEach(p => { toRemove[p.r][p.c] = true; });
+
+  for (let c = 0; c < GRID.cols; c++) {
+    const surviving = [];
+    for (let r = 0; r < GRID.rows; r++) {
+      if (!toRemove[r][c]) {
+        surviving.push(GRID.board[r][c]);
+      }
+    }
+
+    const emptyCount = GRID.rows - surviving.length;
+    const newTiles = [];
+    for (let i = 0; i < emptyCount; i++) {
+      newTiles.push({
+        char: getRandomLetter(i === 0),
+        special: getRandomTileSpecial(),
+        doomCount: 0,
+        animOffsetY: - (emptyCount - i) * 65 - 30,
+        vy: 0
+      });
+    }
+
+    const finalCol = newTiles.concat(surviving);
+    for (let r = 0; r < GRID.rows; r++) {
+      const tile = finalCol[r];
+      const originalRow = surviving.indexOf(tile);
+      if (originalRow !== -1 && originalRow + emptyCount === r) {
+        tile.animOffsetY = - emptyCount * (GRID.tileSize + GRID.gap);
+      } else if (originalRow !== -1 && originalRow === r) {
+        tile.animOffsetY = 0;
+      }
+      GRID.board[r][c] = tile;
+    }
+  }
+
+  enforceVowelCompass();
+
+  setTimeout(() => {
+    if (STATE.boardLockId === lockId && STATE.boardLocked) {
+      STATE.boardLocked = false;
+    }
+  }, 500);
+}
+
+function updateGridPhysics() {
+  let allSettled = true;
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      const tile = GRID.board[r][c];
+      if (tile && tile.animOffsetY < 0) {
+        allSettled = false;
+        tile.vy = (tile.vy || 0) + 1.8;
+        tile.animOffsetY += tile.vy;
+        if (tile.animOffsetY >= 0) {
+          tile.animOffsetY = 0;
+          tile.vy = - tile.vy * 0.28;
+          if (Math.abs(tile.vy) < 0.6) tile.vy = 0;
+        }
+      }
+    }
+  }
+  if (allSettled && STATE.boardLocked && STATE.turnPhase === "HERO_INPUT") {
+    STATE.boardLocked = false;
+  }
+}
+
+function plantDoomTile() {
+  const candidates = [];
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      if (GRID.board[r][c].special !== "DOOM") candidates.push({ r, c });
+    }
+  }
+  if (candidates.length > 0) {
+    const choice = candidates[Math.floor(Math.random() * candidates.length)];
+    const tile = GRID.board[choice.r][choice.c];
+    tile.special = "DOOM";
+    tile.doomCount = 3;
+    spawnDamageNumber(
+      GRID.startX + choice.c * (GRID.tileSize + GRID.gap) + 28,
+      GRID.startY + choice.r * (GRID.tileSize + GRID.gap),
+      "💣 KUTUK BOM!",
+      "#f97316"
+    );
+  }
+}
+
+function normalizeWord(word) {
+  return String(word).trim().toUpperCase();
+}
+
+function getWordMultiplier(len, isRecognized) {
+  if (len < 3) return 0;
+  if (!isRecognized) return 0.6;
+  if (len === 3) return 1.3;
+  if (len === 4) return 1.8;
+  if (len === 5) return 2.4;
+  if (len === 6) return 3.1;
+  return 4.2;
+}
+
+function analyzeWord(rawWord, hero) {
+  const word = normalizeWord(rawWord);
+  const valid = DICTIONARY.has(word);
+  const syn = valid && THEMES[hero.spriteKey] && THEMES[hero.spriteKey].has(word);
+  let mult = getWordMultiplier(word.length, valid);
+  if (syn) mult = Math.round(mult * 1.5 * 10) / 10;
+
+  const hasStarTile = STATE.selectedChain.some(p => GRID.board[p.r] && GRID.board[p.r][p.c].special === "STAR");
+  if (hasStarTile) {
+    mult = Math.round(mult * BALANCE.starMultiplierBonus * 10) / 10;
+  }
+
+  if (STATE.relics.some(r => r.id === "martyr")) {
+    const isCrisis = heroes.some(h => h.hp > 0 && (h.hp / h.maxHp) < BALANCE.crisisThreshold);
+    if (isCrisis) mult = Math.round(mult * BALANCE.crisisMultiplier * 10) / 10;
+  }
+  return { valid, syn: !!syn, mult };
+}
+
+function updateWordSelection(newWord) {
+  STATE.currentWord = newWord;
+  const hero = heroes[STATE.activeHeroIndex];
+  if (STATE.currentWord.length >= 3 && hero) {
+    STATE.wordAnalysis = analyzeWord(STATE.currentWord, hero);
+  } else {
+    STATE.wordAnalysis = null;
+  }
+}
+
+function typeLetterOnBoard(char) {
+  if (!canPlayerAct()) return;
+  const targetChar = char.toUpperCase();
+  const chain = STATE.selectedChain;
+
+  if (chain.length === 0) {
+    for (let r = 0; r < GRID.rows; r++) {
+      for (let c = 0; c < GRID.cols; c++) {
+        if (GRID.board[r][c].char === targetChar) {
+          tryAddTile({ r, c });
+          return;
+        }
+      }
+    }
+    return;
+  }
+
+  const last = chain[chain.length - 1];
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const nr = last.r + dr;
+      const nc = last.c + dc;
+      if (nr >= 0 && nr < GRID.rows && nc >= 0 && nc < GRID.cols) {
+        if (GRID.board[nr][nc].char === targetChar && !chain.some(p => p.r === nr && p.c === nc)) {
+          tryAddTile({ r: nr, c: nc });
+          return;
+        }
+      }
+    }
+  }
+}
+
+const BTN_SUBMIT  = { x: 295, y: 415, w: 155, h: 48 };
+const BTN_RUSH    = { x: 295, y: 470, w: 155, h: 44 };
+const BTN_CLEAR   = { x: 295, y: 520, w: 155, h: 36 };
+const BTN_SHUFFLE = { x: 295, y: 562, w: 155, h: 34 };
+const BTN_SKIP    = { x: 295, y: 602, w: 155, h: 32 };
+
+const SKILL_BTNS = [
+  { x: 475, y: 460, w: 235, h: 64 },
+  { x: 725, y: 460, w: 235, h: 64 }
+];
+
+const BTN_BGM = { x: 865, y: 12, w: 98, h: 26 };
+const BTN_CRT = { x: 760, y: 12, w: 98, h: 26 };
+
+const BTN_TITLE_START = { x: 340, y: 440, w: 300, h: 56 };
+const BTN_TITLE_GUIDE = { x: 380, y: 515, w: 220, h: 40 };
+
+function getCanvasCoords(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: (e.clientX - rect.left) * scaleX,
+    y: (e.clientY - rect.top) * scaleY
+  };
+}
+
+function getTileAt(x, y) {
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      const tx = GRID.startX + c * (GRID.tileSize + GRID.gap);
+      const ty = GRID.startY + r * (GRID.tileSize + GRID.gap);
+      if (x >= tx && x <= tx + GRID.tileSize && y >= ty && y <= ty + GRID.tileSize) {
+        return { r, c };
+      }
+    }
+  }
+  return null;
+}
+
+function isAdjacent(p1, p2) {
+  return Math.abs(p1.r - p2.r) <= 1 && Math.abs(p1.c - p2.c) <= 1;
+}
+
+function tryAddTile(tile) {
+  if (!tile || !canPlayerAct()) return;
+  const chain = STATE.selectedChain;
+
+  if (chain.length === 0) {
+    chain.push(tile);
+    updateWordSelection(GRID.board[tile.r][tile.c].char);
+    AudioSys.playSelect(400);
+    return;
+  }
+
+  const last = chain[chain.length - 1];
+  const alreadyIndex = chain.findIndex(p => p.r === tile.r && p.c === tile.c);
+
+  if (alreadyIndex === -1 && isAdjacent(last, tile)) {
+    chain.push(tile);
+    updateWordSelection(STATE.currentWord + GRID.board[tile.r][tile.c].char);
+    AudioSys.playSelect(420 + chain.length * 35);
+  } else if (alreadyIndex === chain.length - 2) {
+    chain.pop();
+    updateWordSelection(STATE.currentWord.slice(0, -1));
+    AudioSys.playSelect(360);
+  } else if (chain.length === 1 && alreadyIndex === -1 && !isAdjacent(last, tile)) {
+    chain[0] = tile;
+    updateWordSelection(GRID.board[tile.r][tile.c].char);
+    AudioSys.playSelect(400);
+  }
+}
+
+function shuffleGrid() {
+  if (!canPlayerAct()) return;
+  if (STATE.shuffles <= 0) {
+    spawnDamageNumber(canvas.width / 2, 330, "ACAK HABIS!", "#f87171");
+    AudioSys.playSelect(220);
+    return;
+  }
+  STATE.shuffles--;
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      const tile = GRID.board[r][c];
+      tile.char = getRandomLetter((r + c) % 4 === 0);
+      tile.animOffsetY = -40;
+      tile.vy = 0;
+    }
+  }
+  enforceVowelCompass();
+  STATE.selectedChain = [];
+  updateWordSelection("");
+  AudioSys.playSelect(340);
+}
+
+function skipTurn() {
+  if (!canPlayerAct()) return;
+  const actionId = beginAction();
+  const hero = heroes[STATE.activeHeroIndex];
+  changeMp(hero, BALANCE.skipMp);
+  STATE.rushGauge = Math.min(100, STATE.rushGauge + 8);
+  spawnDamageNumber(hero.x, hero.y - 40, "BERTAHAN +9 MP", "#38bdf8");
+
+  for (let c = 0; c < GRID.cols; c++) {
+    const tile = GRID.board[GRID.rows - 1][c];
+    if (tile.special !== "DOOM") {
+      tile.char = getRandomLetter(c === 0);
+      tile.animOffsetY = -30;
+      tile.vy = 0;
+    }
+  }
+  enforceVowelCompass();
+
+  STATE.selectedChain = [];
+  updateWordSelection("");
+  STATE.turnPhase = "HERO_ACTION";
+  AudioSys.playSelect(300);
+
+  setTimeout(() => {
+    if (!isActionValid(actionId)) return;
+    advanceTurn();
+  }, 500);
+}
+
+function triggerPartyRush() {
+  if (!canPlayerAct()) return;
+  if (STATE.rushGauge < 100) {
+    spawnDamageNumber(canvas.width / 2, 330, "METERAN BELUM PENUH!", "#f87171");
+    AudioSys.playSelect(220);
+    return;
+  }
+
+  const actionId = beginAction();
+  STATE.rushGauge = 0;
+  STATE.turnPhase = "HERO_ACTION";
+  AudioSys.playSpecial();
+  STATE.screenShake = 18;
+  STATE.hitFreezeTimer = 70;
+  spawnDamageNumber(canvas.width / 2, 210, "⚡ ALL-OUT PARTY RUSH! ⚡", "#facc15", true);
+
+  const aliveHeroes = heroes.filter(h => h.hp > 0);
+  const initialTarget = getSelectedTarget();
+
+  if (!initialTarget || aliveHeroes.length === 0) {
+    STATE.projectileLedger = { actionId: null, pending: 0 };
+    finishHeroAction(actionId);
+    return;
+  }
+
+  STATE.projectileLedger = { actionId, pending: aliveHeroes.length };
+
+  aliveHeroes.forEach((h, idx) => {
+    h.isActing = true;
+    h.animOffset = -40;
+    setTimeout(() => {
+      if (!isActionValid(actionId) || isCombatFinished()) {
+        if (STATE.projectileLedger.actionId === actionId) {
+          STATE.projectileLedger.pending = Math.max(0, STATE.projectileLedger.pending - 1);
+          if (STATE.projectileLedger.pending === 0) finishHeroAction(actionId);
+        }
+        return;
+      }
+      const target = getSelectedTarget();
+      if (!target) {
+        if (STATE.projectileLedger.actionId === actionId) {
+          STATE.projectileLedger.pending = Math.max(0, STATE.projectileLedger.pending - 1);
+          if (STATE.projectileLedger.pending === 0) finishHeroAction(actionId);
+        }
+        return;
+      }
+      createProjectile({
+        actionId,
+        countPending: false,
+        x: h.x - 20, y: h.y - 10,
+        targetX: target.x, targetY: target.y,
+        color: idx === 0 ? "#f8fafc" : idx === 1 ? "#4ade80" : idx === 2 ? "#38bdf8" : "#facc15",
+        trailColor: "#fbbf24", size: 18, type: "rush",
+        onHit: () => {
+          const freshTarget = (target && target.hp > 0) ? target : getSelectedTarget();
+          if (freshTarget) {
+            applyDamage(h, freshTarget, 25 + Math.floor(Math.random() * 10), {
+              color: "#facc15",
+              particleColor: "#fbbf24",
+              particleCount: 16
+            });
+          }
+        }
+      });
+    }, idx * 160);
+  });
+}
+
+function handlePointerDown(e) {
+  AudioSys.init();
+  const pos = getCanvasCoords(e);
+
+  if (pos.x >= BTN_BGM.x && pos.x <= BTN_BGM.x + BTN_BGM.w &&
+      pos.y >= BTN_BGM.y && pos.y <= BTN_BGM.y + BTN_BGM.h) {
+    AudioSys.toggleBgm();
+    return;
+  }
+
+  if (pos.x >= BTN_CRT.x && pos.x <= BTN_CRT.x + BTN_CRT.w &&
+      pos.y >= BTN_CRT.y && pos.y <= BTN_CRT.y + BTN_CRT.h) {
+    STATE.crtEnabled = !STATE.crtEnabled;
+    AudioSys.playSelect(540);
+    return;
+  }
+
+  if (STATE.turnPhase === "TITLE") {
+    if (pos.x >= BTN_TITLE_START.x && pos.x <= BTN_TITLE_START.x + BTN_TITLE_START.w &&
+        pos.y >= BTN_TITLE_START.y && pos.y <= BTN_TITLE_START.y + BTN_TITLE_START.h) {
+      AudioSys.init();
+      AudioSys.playSpecial();
+      AudioSys.startBgm();
+      startWalkInTransition();
+      return;
+    }
+    if (pos.x >= BTN_TITLE_GUIDE.x && pos.x <= BTN_TITLE_GUIDE.x + BTN_TITLE_GUIDE.w &&
+        pos.y >= BTN_TITLE_GUIDE.y && pos.y <= BTN_TITLE_GUIDE.y + BTN_TITLE_GUIDE.h) {
+      AudioSys.init();
+      AudioSys.playSelect(480);
+      spawnDamageNumber(canvas.width / 2, 400, "Ketik/sambungkan kata untuk menyerang!", "#38bdf8", true);
+      return;
+    }
+    return;
+  }
+
+  if (STATE.turnPhase === "CAMPFIRE") {
+    handleCampfireClick(pos.x, pos.y);
+    return;
+  }
+
+  if (isCombatFinished()) {
+    if (performance.now() - STATE.overSince < 900) return;
+    window.location.reload();
+    return;
+  }
+
+  if (!canPlayerAct()) return;
+
+  enemies.forEach((en, idx) => {
+    if (en.hp > 0) {
+      const ex = en.x - 36;
+      const ey = en.y - 45;
+      if (pos.x >= ex && pos.x <= ex + 72 && pos.y >= ey && pos.y <= ey + 90) {
+        STATE.selectedEnemyIndex = idx;
+        AudioSys.playSelect(650);
+        spawnDamageNumber(en.x, en.y - 75, "🎯 TARGET!", "#38bdf8");
+      }
+    }
+  });
+
+  for (let i = 0; i < SKILL_BTNS.length; i++) {
+    const b = SKILL_BTNS[i];
+    if (pos.x >= b.x && pos.x <= b.x + b.w && pos.y >= b.y && pos.y <= b.y + b.h) {
+      STATE.selectedSkillIndex = i;
+      AudioSys.playSelect(520);
+      return;
+    }
+  }
+
+  if (pos.x >= BTN_SUBMIT.x && pos.x <= BTN_SUBMIT.x + BTN_SUBMIT.w &&
+      pos.y >= BTN_SUBMIT.y && pos.y <= BTN_SUBMIT.y + BTN_SUBMIT.h) {
+    submitWordAction();
+    return;
+  }
+
+  if (pos.x >= BTN_RUSH.x && pos.x <= BTN_RUSH.x + BTN_RUSH.w &&
+      pos.y >= BTN_RUSH.y && pos.y <= BTN_RUSH.y + BTN_RUSH.h) {
+    triggerPartyRush();
+    return;
+  }
+
+  if (pos.x >= BTN_CLEAR.x && pos.x <= BTN_CLEAR.x + BTN_CLEAR.w &&
+      pos.y >= BTN_CLEAR.y && pos.y <= BTN_CLEAR.y + BTN_CLEAR.h) {
+    STATE.selectedChain = [];
+    updateWordSelection("");
+    AudioSys.playSelect(280);
+    return;
+  }
+
+  if (pos.x >= BTN_SHUFFLE.x && pos.x <= BTN_SHUFFLE.x + BTN_SHUFFLE.w &&
+      pos.y >= BTN_SHUFFLE.y && pos.y <= BTN_SHUFFLE.y + BTN_SHUFFLE.h) {
+    shuffleGrid();
+    return;
+  }
+
+  if (pos.x >= BTN_SKIP.x && pos.x <= BTN_SKIP.x + BTN_SKIP.w &&
+      pos.y >= BTN_SKIP.y && pos.y <= BTN_SKIP.y + BTN_SKIP.h) {
+    skipTurn();
+    return;
+  }
+
+  const tile = getTileAt(pos.x, pos.y);
+  if (tile) {
+    STATE.isDragging = true;
+    tryAddTile(tile);
+  }
+}
+
+function handlePointerMove(e) {
+  if (!STATE.isDragging || !canPlayerAct()) return;
+  const pos = getCanvasCoords(e);
+  const tile = getTileAt(pos.x, pos.y);
+  if (tile) {
+    tryAddTile(tile);
+  }
+}
+
+function handlePointerUp() {
+  STATE.isDragging = false;
+}
+
+canvas.addEventListener("pointerdown", handlePointerDown);
+canvas.addEventListener("pointermove", handlePointerMove);
+window.addEventListener("pointerup", handlePointerUp);
+window.addEventListener("pointercancel", handlePointerUp);
+
+window.addEventListener("keydown", (e) => {
+  AudioSys.init();
+  if (e.code === "KeyM") {
+    AudioSys.toggleBgm();
+    return;
+  }
+  if (e.code === "KeyC") {
+    STATE.crtEnabled = !STATE.crtEnabled;
+    AudioSys.playSelect(540);
+    return;
+  }
+
+  if (!canPlayerAct()) return;
+
+  if (e.code === "Enter" || e.code === "Space") {
+    e.preventDefault();
+    submitWordAction();
+  } else if (e.code === "Backspace" || e.code === "Escape") {
+    e.preventDefault();
+    STATE.selectedChain = [];
+    updateWordSelection("");
+    AudioSys.playSelect(280);
+  } else if (e.code === "Digit1" || e.code === "Numpad1") {
+    STATE.selectedSkillIndex = 0;
+    AudioSys.playSelect(500);
+  } else if (e.code === "Digit2" || e.code === "Numpad2") {
+    STATE.selectedSkillIndex = 1;
+    AudioSys.playSelect(500);
+  } else if (e.code === "KeyR") {
+    shuffleGrid();
+  } else if (e.code === "KeyU") {
+    triggerPartyRush();
+  } else if (e.code === "Tab") {
+    e.preventDefault();
+    skipTurn();
+  } else if (e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
+    typeLetterOnBoard(e.key);
+  }
+});
+
+function submitWordAction() {
+  if (!canPlayerAct()) return;
+  const word = normalizeWord(STATE.currentWord);
+  const hero = heroes[STATE.activeHeroIndex];
+  const skill = HERO_SKILLS[STATE.activeHeroIndex][STATE.selectedSkillIndex];
+
+  if (word.length < 3) {
+    spawnDamageNumber(canvas.width / 2, 330, "MINIMAL 3 HURUF!", "#f87171");
+    AudioSys.playSelect(220);
+    return;
+  }
+
+  const analysis = STATE.wordAnalysis || analyzeWord(word, hero);
+  const { valid: isRecognized, syn, mult } = analysis;
+
+  if (hero.mp < skill.mpCost) {
+    spawnDamageNumber(hero.x, hero.y - 45, "MP TIDAK CUKUP!", "#38bdf8");
+    AudioSys.playSelect(220);
+    return;
+  }
+
+  const actionId = beginAction();
+  changeMp(hero, -skill.mpCost);
+  let totalPower = Math.round(skill.basePower * mult);
+
+  const startsWithVowel = "AIUEO".includes(word[0]);
+  if (startsWithVowel && STATE.relics.some(r => r.id === "magma")) {
+    totalPower += BALANCE.magmaFireBonus;
+    spawnDamageNumber(hero.x, hero.y - 95, "+14 FIRE (INTI MAGMA)", "#f97316");
+  }
+
+  let hasFireTile = false;
+  let hasFrostTile = false;
+  let hasLightningTile = false;
+  let hasStarTile = false;
+  let hasManaTile = false;
+  let hasShieldTile = false;
+  let hasPoisonTile = false;
+  let clearedDoom = false;
+
+  STATE.selectedChain.forEach(p => {
+    const tile = GRID.board[p.r][p.c];
+    if (tile.special === "FIRE") hasFireTile = true;
+    if (tile.special === "FROST") hasFrostTile = true;
+    if (tile.special === "LIGHTNING") hasLightningTile = true;
+    if (tile.special === "STAR") hasStarTile = true;
+    if (tile.special === "MANA") hasManaTile = true;
+    if (tile.special === "SHIELD") hasShieldTile = true;
+    if (tile.special === "POISON") hasPoisonTile = true;
+    if (tile.special === "DOOM") {
+      clearedDoom = true;
+      clearDoomTile(tile);
+    }
+  });
+
+  if (clearedDoom) {
+    spawnDamageNumber(hero.x, hero.y - 110, "✨ BOM DINETRALISIR!", "#4ade80");
+    AudioSys.playSpecial();
+  }
+
+  if (hasStarTile) {
+    spawnDamageNumber(hero.x, hero.y - 95, "⭐ BONUS BINTANG (+35%)", "#facc15");
+  }
+
+  if (hasManaTile) {
+    changeMp(hero, BALANCE.manaTileMp);
+    spawnDamageNumber(hero.x, hero.y - 65, `+${BALANCE.manaTileMp} MP (KRISTAL)`, "#38bdf8");
+    AudioSys.playSpecial();
+  }
+
+  if (hasShieldTile) {
+    STATE.partyGuardTurns = 1;
+    spawnDamageNumber(hero.x, hero.y - 80, "🛡️ GUARD AKTIF!", "#facc15");
+  }
+
+  if (hasPoisonTile) {
+    applyDamage(null, hero, BALANCE.poisonTileDamage, {
+      label: "-6 HP (RACUN UBIN)",
+      color: "#c084fc",
+      particleColor: "#a855f7",
+      yOffset: 50
+    });
+    if (!isActionValid(actionId) || isCombatFinished()) return;
+    if (hero.hp <= 0) {
+      finishHeroAction(actionId);
+      return;
+    }
+  }
+
+  if (word.length >= 5 && STATE.relics.some(r => r.id === "quill")) {
+    heroes.forEach(h => {
+      if (h.hp > 0) applyHealing(hero, h, BALANCE.quillHeal, { yOffset: 120 });
+    });
+    AudioSys.playHeal();
+  }
+
+  STATE.stats.wordsCount++;
+  STATE.rushGauge = Math.min(100, STATE.rushGauge + word.length * 5 + (isRecognized ? 10 : 0));
+
+  if (syn) spawnDamageNumber(hero.x, hero.y - 50, "★ SINERGI HERO!", "#facc15");
+  else if (!isRecognized) spawnDamageNumber(hero.x, hero.y - 50, "BUKAN KATA", "#94a3b8");
+
+  AudioSys.playSubmitSuccess(word.length);
+  STATE.turnPhase = "HERO_ACTION";
+  hero.isActing = true;
+  hero.animOffset = -45;
+
+  const targetEnemy = getSelectedTarget();
+  const isCrit = mult >= 1.8;
+
+  replenishGridCascading(STATE.selectedChain);
+  STATE.selectedChain = [];
+  updateWordSelection("");
+
+  const skillContext = {
+    hero,
+    skill,
+    targetEnemy,
+    totalPower,
+    mult,
+    isCrit,
+    isRecognized,
+    hasFireTile,
+    hasFrostTile,
+    hasLightningTile,
+    word,
+    actionId
+  };
+
+  const handler = SKILL_HANDLERS[skill.handler];
+  if (handler) {
+    handler(skillContext);
+  } else {
+    finishHeroAction(actionId);
+  }
+}
+
+const SKILL_HANDLERS = {
+  SINGLE_ATTACK: (ctx) => {
+    const { hero, skill, targetEnemy, totalPower, mult, isCrit, isRecognized, hasFireTile, hasFrostTile, hasLightningTile, word, actionId } = ctx;
+    if (!targetEnemy) {
+      finishHeroAction(actionId);
+      return;
+    }
+    const proj = skill.projectile || { type: "slash", color: "#f8fafc", trailColor: "#38bdf8", size: 14 };
+    createProjectile({
+      actionId,
+      x: proj.fromTop ? targetEnemy.x : hero.x - 20,
+      y: proj.fromTop ? 0 : hero.y - 5,
+      targetX: targetEnemy.x,
+      targetY: targetEnemy.y,
+      color: proj.color,
+      trailColor: proj.trailColor,
+      size: proj.size || 14,
+      type: proj.type || "slash",
+      onHit: () => {
+        if (!isActionValid(actionId)) return;
+        if (proj.type === "lightning") AudioSys.playMagic();
+        else if (proj.type === "arrow") AudioSys.playBow();
+        else AudioSys.playSlash();
+
+        const opts = skill.options || {};
+        const label = opts.labelSuffix
+          ? `-${totalPower} ${opts.labelSuffix}`
+          : (isRecognized ? `-${totalPower} (x${mult.toFixed(1)})` : `-${totalPower}`);
+
+        const actualDmg = applyDamage(hero, targetEnemy, totalPower, {
+          isCrit,
+          label,
+          particleColor: opts.particleColor || "#ef4444",
+          particleCount: opts.particleCount || 20
+        });
+
+        if (actualDmg > STATE.stats.bestWordDmg) {
+          STATE.stats.bestWord = word;
+          STATE.stats.bestWordDmg = actualDmg;
+        }
+
+        if (hasFireTile && targetEnemy.hp > 0) {
+          targetEnemy.burnTurns = 2;
+          spawnDamageNumber(targetEnemy.x, targetEnemy.y - 75, "🔥 TERBAKAR!", "#f97316");
+        }
+
+        if (hasFrostTile && targetEnemy.hp > 0) {
+          targetEnemy.frozen = true;
+          targetEnemy.intent = { type: "FROZEN", desc: "❄️ Membeku" };
+          AudioSys.playFreeze();
+          spawnDamageNumber(targetEnemy.x, targetEnemy.y - 75, "❄️ BEKU (1 TURN)!", "#93c5fd");
+        }
+
+        if (hasLightningTile) {
+          AudioSys.playZap();
+          enemies.forEach(en => {
+            if (en !== targetEnemy && en.hp > 0) {
+              applyDamage(hero, en, BALANCE.chainZapDamage, {
+                label: `-${BALANCE.chainZapDamage} ⚡`,
+                color: "#67e8f9",
+                particleColor: "#38bdf8"
+              });
+            }
+          });
+        }
+
+        if (opts.poisonTurns && targetEnemy.hp > 0) {
+          targetEnemy.poisonTurns = opts.poisonTurns;
+          spawnDamageNumber(targetEnemy.x, targetEnemy.y - 55, "☠️ TERACUNI!", "#4ade80");
+        }
+
+        if (opts.stun && actualDmg > 0 && targetEnemy.hp > 0) {
+          targetEnemy.stunned = true;
+          targetEnemy.intent = { type: "STUN", desc: "💫 Pusing" };
+          spawnDamageNumber(targetEnemy.x, targetEnemy.y - 55, "STUNNED!", "#38bdf8");
+        }
+      }
+    });
+  },
+
+  AOE_ATTACK: (ctx) => {
+    const { hero, skill, totalPower, isCrit, hasFireTile, hasFrostTile, hasLightningTile, word, actionId } = ctx;
+    const proj = skill.projectile || { type: "fireball", color: "#f97316", trailColor: "#ef4444", size: 20 };
+    createProjectile({
+      actionId,
+      x: hero.x - 20,
+      y: hero.y - 15,
+      targetX: 250,
+      targetY: 160,
+      color: proj.color,
+      trailColor: proj.trailColor,
+      size: proj.size || 20,
+      type: proj.type || "fireball",
+      onHit: () => {
+        if (!isActionValid(actionId)) return;
+        if (proj.type === "arrow") AudioSys.playBow();
+        else AudioSys.playMagic();
+
+        let totalAoE = 0;
+        for (const en of enemies) {
+          if (isCombatFinished() || !isActionValid(actionId)) break;
+          if (en.hp <= 0) continue;
+          const actualDmg = applyDamage(hero, en, totalPower, {
+            isCrit,
+            label: `-${totalPower}`,
+            particleColor: (skill.options && skill.options.particleColor) || "#f97316"
+          });
+          totalAoE += actualDmg;
+          if (hasFireTile && en.hp > 0) en.burnTurns = 2;
+          if (hasFrostTile && en.hp > 0) {
+            en.frozen = true;
+            en.intent = { type: "FROZEN", desc: "❄️ Membeku" };
+          }
+          if (isCombatFinished() || !isActionValid(actionId)) break;
+        }
+
+        if (hasFrostTile) AudioSys.playFreeze();
+
+        if (hasLightningTile) {
+          AudioSys.playZap();
+          enemies.forEach(en => {
+            if (en.hp > 0) {
+              applyDamage(hero, en, BALANCE.chainZapDamage, {
+                label: `-${BALANCE.chainZapDamage} ⚡`,
+                color: "#67e8f9",
+                particleColor: "#38bdf8"
+              });
+            }
+          });
+        }
+
+        if (totalAoE > STATE.stats.bestWordDmg) {
+          STATE.stats.bestWord = word;
+          STATE.stats.bestWordDmg = totalAoE;
+        }
+      }
+    });
+  },
+
+  SMITE_HEAL: (ctx) => {
+    const { hero, skill, targetEnemy, totalPower, mult, isCrit, word, actionId } = ctx;
+    if (!targetEnemy) {
+      finishHeroAction(actionId);
+      return;
+    }
+    const proj = skill.projectile || { type: "slash", color: "#facc15", trailColor: "#f59e0b", size: 14 };
+    createProjectile({
+      actionId,
+      x: hero.x - 20,
+      y: hero.y - 5,
+      targetX: targetEnemy.x,
+      targetY: targetEnemy.y,
+      color: proj.color,
+      trailColor: proj.trailColor,
+      size: proj.size || 14,
+      type: proj.type || "slash",
+      onHit: () => {
+        if (!isActionValid(actionId)) return;
+        AudioSys.playSlash();
+        const actualDmg = applyDamage(hero, targetEnemy, totalPower, {
+          isCrit,
+          label: `-${totalPower}`,
+          particleColor: "#facc15"
+        });
+        if (actualDmg > STATE.stats.bestWordDmg) {
+          STATE.stats.bestWord = word;
+          STATE.stats.bestWordDmg = actualDmg;
+        }
+        const aliveHeroes = heroes.filter(h => h.hp > 0);
+        aliveHeroes.sort((a, b) => (a.hp / a.maxHp) - (b.hp / b.maxHp));
+        if (aliveHeroes.length > 0) {
+          const healBase = (skill.options && skill.options.healBase) || 20;
+          const healVal = Math.round(healBase * mult);
+          applyHealing(hero, aliveHeroes[0], healVal);
+          AudioSys.playHeal();
+        }
+      }
+    });
+  },
+
+  AOE_HEAL: (ctx) => {
+    const { hero, totalPower, actionId } = ctx;
+    AudioSys.playHeal();
+    heroes.forEach(h => {
+      if (h.hp > 0) applyHealing(hero, h, totalPower);
+    });
+    finishHeroAction(actionId);
+  }
+};
+
+const ENEMY_ACTION_HANDLERS = {
+  ATTACK: ({ enemy, damageVal, targetsAtHit }) => {
+    const targetHero = targetsAtHit[Math.floor(Math.random() * targetsAtHit.length)];
+    AudioSys.playSlash();
+    applyDamage(enemy, targetHero, damageVal, {
+      label: STATE.partyGuardTurns > 0 ? `-${Math.round(damageVal * BALANCE.guardMultiplier)} (GUARD)` : `-${damageVal}`,
+      color: STATE.partyGuardTurns > 0 ? "#facc15" : "#ef4444",
+      particleColor: "#ef4444"
+    });
+  },
+
+  STUN_ATTACK: ({ enemy, damageVal, targetsAtHit }) => {
+    const targetHero = targetsAtHit[Math.floor(Math.random() * targetsAtHit.length)];
+    AudioSys.playSlash();
+    const actual = applyDamage(enemy, targetHero, damageVal, {
+      label: STATE.partyGuardTurns > 0 ? `-${Math.round(damageVal * BALANCE.guardMultiplier)} (GUARD)` : `-${damageVal}`,
+      color: STATE.partyGuardTurns > 0 ? "#facc15" : "#ef4444",
+      particleColor: "#ef4444"
+    });
+    if (actual > 0 && targetHero.hp > 0) {
+      targetHero.stunned = true;
+      spawnDamageNumber(targetHero.x, targetHero.y - 50, "PUSING!", "#38bdf8");
+    }
+  },
+
+  MAGIC_AOE: ({ enemy, damageVal, targetsAtHit, actionId }) => {
+    AudioSys.playMagic();
+    for (const h of targetsAtHit) {
+      if (!isActionValid(actionId) || isCombatFinished() || h.hp <= 0) break;
+      applyDamage(enemy, h, damageVal, {
+        label: STATE.partyGuardTurns > 0 ? `-${Math.round(damageVal * BALANCE.guardMultiplier)} (GUARD)` : `-${damageVal} (MAGIC)`,
+        color: STATE.partyGuardTurns > 0 ? "#facc15" : "#c084fc",
+        particleColor: "#a855f7"
+      });
+    }
+  },
+
+  POISON_SPIT: ({ enemy }) => {
+    AudioSys.playMagic();
+    const r = Math.floor(Math.random() * GRID.rows);
+    const c = Math.floor(Math.random() * GRID.cols);
+    GRID.board[r][c].special = "POISON";
+    spawnDamageNumber(enemy.x, enemy.y - 30, "SEMBURAN RACUN!", "#a855f7");
+  },
+
+  DOOM: () => {
+    plantDoomTile();
+    AudioSys.playMagic();
+  }
+};
+
+function advanceTurn() {
+  const actionId = beginAction();
+
+  if (enemies.every(e => e.hp <= 0)) {
+    startWalkOutTransition();
+    return;
+  }
+
+  let nextIdx = STATE.activeHeroIndex + 1;
+  while (nextIdx < heroes.length && heroes[nextIdx].hp <= 0) {
+    nextIdx++;
+  }
+
+  if (nextIdx < heroes.length) {
+    STATE.activeHeroIndex = nextIdx;
+    STATE.selectedSkillIndex = 0;
+    const activeHero = heroes[nextIdx];
+    if (activeHero.stunned) {
+      activeHero.stunned = false;
+      spawnDamageNumber(activeHero.x, activeHero.y - 45, "TERSTUN! GILIRAN LEWAT", "#38bdf8");
+      setTimeout(() => {
+        if (!isActionValid(actionId)) return;
+        advanceTurn();
+      }, 500);
+      return;
+    }
+    STATE.turnPhase = "HERO_INPUT";
+  } else {
+    STATE.turnPhase = "ENEMY_ACTION";
+    setTimeout(() => {
+      if (!isActionValid(actionId)) return;
+      executeEnemyTurns();
+    }, 450);
+  }
+}
+
+function triggerCampfireIntermission() {
+  beginAction();
+  STATE.turnPhase = "CAMPFIRE";
+  AudioSys.playCampfire();
+
+  const unowned = ALL_RELICS.filter(r => !STATE.relics.some(ur => ur.id === r.id));
+  const shuffled = unowned.sort(() => Math.random() - 0.5);
+  STATE.offeredRelics = shuffled.slice(0, 3);
+}
+
+function handleCampfireClick(x, y) {
+  if (STATE.turnPhase !== "CAMPFIRE") return;
+  if (!STATE.offeredRelics || STATE.offeredRelics.length === 0) return;
+  const cardW = 240;
+  const cardH = 140;
+  const startX = (canvas.width - (STATE.offeredRelics.length * cardW + (STATE.offeredRelics.length - 1) * 20)) / 2;
+  const cardY = 320;
+
+  for (let idx = 0; idx < STATE.offeredRelics.length; idx++) {
+    const relic = STATE.offeredRelics[idx];
+    const rx = startX + idx * (cardW + 20);
+    if (x >= rx && x <= rx + cardW && y >= cardY && y <= cardY + cardH) {
+      STATE.relics.push(relic);
+      STATE.offeredRelics = [];
+      STATE.partyGuardTurns = 0;
+      AudioSys.playSpecial();
+
+      heroes.forEach(h => {
+        if (h.hp > 0) {
+          applyHealing(null, h, Math.round(h.maxHp * BALANCE.campfireHealPercent));
+          changeMp(h, Math.round(h.maxMp * BALANCE.campfireHealPercent));
+        }
+      });
+
+      STATE.wave++;
+      enemies = makeWave(STATE.wave);
+      STATE.shuffles = 3;
+      STATE.selectedEnemyIndex = 0;
+
+      startWalkInTransition();
+      break;
+    }
+  }
+}
+
+function executeEnemyTurns() {
+  const actionId = beginAction();
+  const aliveEnemies = enemies.filter(e => e.hp > 0);
+
+  aliveEnemies.forEach(en => {
+    if (en.burnTurns > 0 && en.hp > 0) {
+      applyDamage(null, en, BALANCE.burnDamage, {
+        label: `-${BALANCE.burnDamage} (BURN)`,
+        color: "#f97316",
+        particleColor: "#f97316",
+        particleCount: 12,
+        yOffset: 45
+      });
+      en.burnTurns--;
+    }
+    if (en.poisonTurns > 0 && en.hp > 0) {
+      applyDamage(null, en, 10, {
+        label: `-10 (RACUN)`,
+        color: "#4ade80",
+        particleColor: "#22c55e",
+        particleCount: 12,
+        yOffset: 55
+      });
+      en.poisonTurns--;
+    }
+  });
+
+  if (enemies.every(e => e.hp <= 0)) {
+    advanceTurn();
+    return;
+  }
+
+  tickDoomTiles();
+  if (!isActionValid(actionId) || isCombatFinished()) return;
+
+  const attackers = enemies.filter(e => e.hp > 0);
+  if (attackers.length === 0) {
+    finishEnemyPhase(actionId);
+    return;
+  }
+
+  let currentAttackerIndex = 0;
+
+  function stepEnemy() {
+    if (!isActionValid(actionId) || isCombatFinished()) return;
+
+    if (currentAttackerIndex >= attackers.length) {
+      finishEnemyPhase(actionId);
+      return;
+    }
+
+    const enemy = attackers[currentAttackerIndex];
+    currentAttackerIndex++;
+
+    if (enemy.hp <= 0) {
+      stepEnemy();
+      return;
+    }
+
+    if (enemy.frozen) {
+      enemy.frozen = false;
+      spawnDamageNumber(enemy.x, enemy.y - 35, "ES MENCAIR", "#93c5fd");
+      setTimeout(stepEnemy, 400);
+      return;
+    }
+
+    if (enemy.stunned) {
+      enemy.stunned = false;
+      spawnDamageNumber(enemy.x, enemy.y - 35, "STUN HILANG", "#94a3b8");
+      setTimeout(stepEnemy, 400);
+      return;
+    }
+
+    if (enemy.intent && enemy.intent.type === "DOOM") {
+      const doomHandler = ENEMY_ACTION_HANDLERS.DOOM;
+      if (doomHandler) doomHandler();
+      setTimeout(stepEnemy, 500);
+      return;
+    }
+
+    const currentAlive = heroes.filter(h => h.hp > 0);
+    if (currentAlive.length === 0) {
+      STATE.turnPhase = "GAME_OVER";
+      STATE.overSince = performance.now();
+      beginAction();
+      return;
+    }
+
+    enemy.isActing = true;
+    enemy.animOffset = 35;
+
+    setTimeout(() => {
+      if (!isActionValid(actionId) || enemy.hp <= 0 || isCombatFinished()) {
+        enemy.animOffset = 0;
+        enemy.isActing = false;
+        stepEnemy();
+        return;
+      }
+      enemy.animOffset = 0;
+      enemy.isActing = false;
+
+      const damageVal = (enemy.intent && enemy.intent.val) ? enemy.intent.val : getEnemyAttackPower(STATE.wave, enemy.role === "Caster");
+      const targetsAtHit = heroes.filter(h => h.hp > 0);
+
+      if (targetsAtHit.length === 0) {
+        STATE.turnPhase = "GAME_OVER";
+        STATE.overSince = performance.now();
+        beginAction();
+        return;
+      }
+
+      const actionType = enemy.intent ? enemy.intent.type : "ATTACK";
+      const actionHandler = ENEMY_ACTION_HANDLERS[actionType] || ENEMY_ACTION_HANDLERS.ATTACK;
+      actionHandler({ enemy, damageVal, targetsAtHit, actionId });
+
+      if (heroes.every(h => h.hp <= 0)) {
+        STATE.turnPhase = "GAME_OVER";
+        STATE.overSince = performance.now();
+        beginAction();
+        return;
+      }
+
+      setTimeout(stepEnemy, 450);
+    }, 250);
+  }
+
+  stepEnemy();
+}
+
+function finishEnemyPhase(actionId) {
+  if (!isActionValid(actionId) || isCombatFinished()) return;
+  STATE.partyGuardTurns = 0;
+  STATE.shuffles = Math.min(3, STATE.shuffles + 1);
+
+  const extraMp = STATE.relics.some(r => r.id === "grail") ? BALANCE.grailBonusMp : 0;
+  heroes.forEach(h => {
+    if (h.hp > 0) changeMp(h, BALANCE.turnMpRegen + extraMp);
+  });
+
+  let firstAlive = heroes.findIndex(h => h.hp > 0);
+  if (firstAlive !== -1) {
+    STATE.activeHeroIndex = firstAlive;
+    STATE.selectedSkillIndex = 0;
+    refreshEnemyIntents();
+    const activeHero = heroes[firstAlive];
+    if (activeHero.stunned) {
+      activeHero.stunned = false;
+      spawnDamageNumber(activeHero.x, activeHero.y - 45, "TERSTUN! GILIRAN LEWAT", "#38bdf8");
+      setTimeout(() => {
+        if (!isActionValid(actionId)) return;
+        advanceTurn();
+      }, 500);
+      return;
+    }
+    STATE.turnPhase = "HERO_INPUT";
+  } else {
+    STATE.turnPhase = "GAME_OVER";
+    STATE.overSince = performance.now();
+    beginAction();
+  }
+}
+
+function drawCharacterSprite(entity, isCurrentTurn, isTargeted, isWalking = false) {
+  const isDead = entity.hp <= 0;
+  const drawX = entity.x + (entity.animOffset || 0);
+  const drawY = entity.y;
+
+  ctx.save();
+  if (isDead) {
+    ctx.globalAlpha = 0.22;
+  }
+
+  if (isCurrentTurn && !isDead && !isWalking) {
+    ctx.strokeStyle = "#f59e0b";
+    ctx.lineWidth = 3;
+    ctx.fillStyle = "rgba(245, 158, 11, 0.2)";
+    ctx.beginPath();
+    ctx.ellipse(drawX, drawY + 40, 32, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#f59e0b";
+    ctx.beginPath();
+    ctx.moveTo(drawX, drawY - 54);
+    ctx.lineTo(drawX - 7, drawY - 66);
+    ctx.lineTo(drawX + 7, drawY - 66);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  if (isTargeted && !entity.isHero && !isDead) {
+    const pulse = Math.sin(Date.now() * 0.007) * 2.5;
+
+    ctx.strokeStyle = "#ef4444";
+    ctx.lineWidth = 2.5;
+    ctx.fillStyle = "rgba(239, 68, 68, 0.22)";
+    ctx.beginPath();
+    ctx.ellipse(drawX, drawY + 40, 32, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    const bDist = 26 + pulse;
+    const bLen = 8;
+    ctx.strokeStyle = "#ef4444";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(drawX - bDist, drawY - bDist + bLen);
+    ctx.lineTo(drawX - bDist, drawY - bDist);
+    ctx.lineTo(drawX - bDist + bLen, drawY - bDist);
+    ctx.moveTo(drawX + bDist - bLen, drawY - bDist);
+    ctx.lineTo(drawX + bDist, drawY - bDist);
+    ctx.lineTo(drawX + bDist, drawY - bDist + bLen);
+    ctx.moveTo(drawX - bDist, drawY + bDist - bLen);
+    ctx.lineTo(drawX - bDist, drawY + bDist);
+    ctx.lineTo(drawX - bDist + bLen, drawY + bDist);
+    ctx.moveTo(drawX + bDist - bLen, drawY + bDist);
+    ctx.lineTo(drawX + bDist, drawY + bDist);
+    ctx.lineTo(drawX + bDist, drawY + bDist - bLen);
+
+    ctx.moveTo(drawX - bDist - 4, drawY);
+    ctx.lineTo(drawX - bDist + 3, drawY);
+    ctx.moveTo(drawX + bDist + 4, drawY);
+    ctx.lineTo(drawX + bDist - 3, drawY);
+    ctx.moveTo(drawX, drawY - bDist - 4);
+    ctx.lineTo(drawX, drawY - bDist + 3);
+    ctx.moveTo(drawX, drawY + bDist + 4);
+    ctx.lineTo(drawX, drawY + bDist - 3);
+    ctx.stroke();
+
+    const hasIntent = entity.intent && STATE.turnPhase === "HERO_INPUT";
+    const badgeY = drawY - (hasIntent ? 72 : 52) + pulse;
+
+    ctx.fillStyle = "rgba(153, 27, 27, 0.95)";
+    ctx.strokeStyle = "#f87171";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(drawX - 32, badgeY - 14, 64, 16, 4);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#ef4444";
+    ctx.beginPath();
+    ctx.moveTo(drawX - 5, badgeY + 2);
+    ctx.lineTo(drawX + 5, badgeY + 2);
+    ctx.lineTo(drawX, badgeY + 6);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 9px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("🎯 TARGET", drawX, badgeY - 3);
+  }
+
+  if (STATE.partyGuardTurns > 0 && entity.isHero && !isDead) {
+    ctx.strokeStyle = "rgba(250, 204, 21, 0.75)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(drawX, drawY + 4, 38, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  const stepRate = isWalking ? 160 : 450;
+  const walkFrame = Math.floor(STATE.animTimer / stepRate) % 2;
+  const stateKey = entity.isActing ? "act" : isWalking ? `walk_${walkFrame}` : `idle_${walkFrame}`;
+  const spriteKey = `${entity.spriteKey}_${stateKey}`;
+  const spriteCanvas = SpriteLibrary.sprites[spriteKey] || SpriteLibrary.sprites[`${entity.spriteKey}_idle_0`];
+
+  if (spriteCanvas) {
+    const sw = SPRITE_SIZE * SPRITE_SCALE;
+    const sh = SPRITE_SIZE * SPRITE_SCALE;
+    ctx.drawImage(
+      spriteCanvas,
+      0, 0, SPRITE_SIZE, SPRITE_SIZE,
+      Math.floor(drawX - sw / 2),
+      Math.floor(drawY - sh / 2),
+      sw, sh
+    );
+  }
+
+  if (!isWalking) {
+    const barW = 54;
+    const barH = 6;
+    const barX = drawX - barW / 2;
+    const barY = drawY + 44;
+
+    ctx.fillStyle = "rgba(0,0,0,0.8)";
+    ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+    const hpPct = Math.max(0, entity.hp / entity.maxHp);
+    ctx.fillStyle = entity.isHero ? "#22c55e" : "#ef4444";
+    ctx.fillRect(barX, barY, barW * hpPct, barH);
+
+    if (entity.isHero) {
+      const mpPct = Math.max(0, entity.mp / entity.maxMp);
+      ctx.fillStyle = "rgba(0,0,0,0.8)";
+      ctx.fillRect(barX - 1, barY + 7, barW + 2, 4);
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillRect(barX, barY + 8, barW * mpPct, 3);
+    }
+
+    ctx.fillStyle = "#f8fafc";
+    ctx.font = "bold 11px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(entity.name, drawX, barY - 4);
+    ctx.font = "bold 9px monospace";
+    ctx.fillText(`${entity.hp}/${entity.maxHp}`, drawX, barY + 18);
+
+    if (!entity.isHero && !isDead && entity.intent && STATE.turnPhase === "HERO_INPUT") {
+      ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(drawX - 42, drawY - 60, 84, 20, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = entity.intent.type === "MAGIC_AOE"
+        ? "#c084fc"
+        : entity.intent.type === "DOOM"
+          ? "#f97316"
+          : entity.intent.type === "STUN_ATTACK"
+            ? "#38bdf8"
+            : entity.intent.type === "FROZEN"
+              ? "#93c5fd"
+              : "#f87171";
+      ctx.font = "bold 10px monospace";
+      ctx.fillText(entity.intent.desc, drawX, drawY - 46);
+    }
+  }
+
+  if (entity.frozen && !isDead) {
+    ctx.fillStyle = "#93c5fd";
+    ctx.font = "bold 12px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("❄️ BEKU", drawX, drawY - 25);
+  } else if (entity.stunned && !isDead) {
+    ctx.fillStyle = "#38bdf8";
+    ctx.font = "bold 12px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("💫 STUN", drawX, drawY - 25);
+  }
+
+  if (entity.burnTurns > 0 && !isDead) {
+    ctx.fillStyle = "#f97316";
+    ctx.font = "bold 12px monospace";
+    ctx.fillText(`🔥${entity.burnTurns}`, drawX + 30, drawY - 20);
+  }
+
+  if (entity.poisonTurns > 0 && !isDead) {
+    ctx.fillStyle = "#4ade80";
+    ctx.font = "bold 12px monospace";
+    ctx.fillText(`☠️${entity.poisonTurns}`, drawX - 30, drawY - 20);
+  }
+
+  ctx.restore();
+}
+
+function drawTitleScreen() {
+  ctx.fillStyle = "#070913";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const t = Date.now() * 0.003;
+  const grad = ctx.createRadialGradient(canvas.width / 2, 170, 20, canvas.width / 2, 170, 360);
+  grad.addColorStop(0, "rgba(99, 102, 241, 0.28)");
+  grad.addColorStop(0.5, "rgba(79, 70, 229, 0.08)");
+  grad.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.strokeStyle = "#1e293b";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(40, 30, canvas.width - 80, canvas.height - 60);
+
+  ctx.fillStyle = "#4f46e5";
+  [ [40, 30], [canvas.width - 48, 30], [40, canvas.height - 38], [canvas.width - 48, canvas.height - 38] ].forEach(([cx, cy]) => {
+    ctx.fillRect(cx, cy, 8, 8);
+  });
+
+  [120, canvas.width - 120].forEach((tx, idx) => {
+    const flicker = Math.sin(t * 4 + idx * 2) * 5;
+    const tg = ctx.createRadialGradient(tx, 150 + flicker, 4, tx, 150 + flicker, 45);
+    tg.addColorStop(0, "rgba(251, 191, 36, 0.9)");
+    tg.addColorStop(0.4, "rgba(249, 115, 22, 0.4)");
+    tg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = tg;
+    ctx.beginPath();
+    ctx.arc(tx, 150 + flicker, 45, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  ctx.fillStyle = "#38bdf8";
+  ctx.font = "bold 13px monospace";
+  ctx.fillText("⚔️ TACTICAL WORD PUZZLE RPG ⚔️", canvas.width / 2, 95);
+
+  const pulse = Math.sin(t * 3) * 3;
+  ctx.fillStyle = "#f8fafc";
+  ctx.shadowColor = "#6366f1";
+  ctx.shadowBlur = 18 + pulse;
+  ctx.font = "bold 44px 'Courier New', monospace";
+  ctx.fillText("SPELLBLADE", canvas.width / 2, 145);
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = "#facc15";
+  ctx.font = "bold 22px 'Courier New', monospace";
+  ctx.fillText("WORD DUNGEON PARTY", canvas.width / 2, 190);
+
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "bold 12px monospace";
+  ctx.fillText("DELUXE EXPEDITION EDITION", canvas.width / 2, 218);
+
+  ctx.fillStyle = "#0f172a";
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(canvas.width / 2 - 240, 245, 480, 140, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#64748b";
+  ctx.font = "11px monospace";
+  ctx.fillText("FORMASI 4 PAHLAWAN:", canvas.width / 2, 265);
+
+  const heroSlots = [
+    { key: "warrior", label: "Ksatria", desc: "Fisik & Stun", x: canvas.width / 2 - 165 },
+    { key: "ranger",  label: "Pemanah", desc: "Racun & Panah", x: canvas.width / 2 - 55 },
+    { key: "mage",    label: "Penyihir", desc: "AoE & Petir", x: canvas.width / 2 + 55 },
+    { key: "cleric",  label: "Tabib",    desc: "Heal & Doa", x: canvas.width / 2 + 165 }
+  ];
+
+  heroSlots.forEach((slot) => {
+    const idleF = Math.floor(STATE.animTimer / 400) % 2;
+    const spr = SpriteLibrary.sprites[`${slot.key}_idle_${idleF}`];
+    if (spr) {
+      ctx.drawImage(spr, 0, 0, SPRITE_SIZE, SPRITE_SIZE, slot.x - 30, 280, 60, 60);
+    }
+    ctx.fillStyle = "#f8fafc";
+    ctx.font = "bold 11px monospace";
+    ctx.fillText(slot.label, slot.x, 352);
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "9px monospace";
+    ctx.fillText(slot.desc, slot.x, 368);
+  });
+
+  const btnHoverPulse = Math.sin(t * 5) * 2;
+  ctx.fillStyle = "#15803d";
+  ctx.strokeStyle = "#4ade80";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_TITLE_START.x, BTN_TITLE_START.y + btnHoverPulse, BTN_TITLE_START.w, BTN_TITLE_START.h, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 18px monospace";
+  ctx.fillText("MULAI PETUALANGAN [↵]", canvas.width / 2, BTN_TITLE_START.y + btnHoverPulse + 28);
+
+  ctx.fillStyle = "#1e293b";
+  ctx.strokeStyle = "#475569";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_TITLE_GUIDE.x, BTN_TITLE_GUIDE.y, BTN_TITLE_GUIDE.w, BTN_TITLE_GUIDE.h, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#cbd5e1";
+  ctx.font = "bold 12px monospace";
+  ctx.fillText("PANDUAN & KONTROL", canvas.width / 2, BTN_TITLE_GUIDE.y + 20);
+
+  ctx.fillStyle = "#64748b";
+  ctx.font = "11px monospace";
+  ctx.fillText("Mendukung ketik langsung keyboard (A-Z) & Touch Drag ubin", canvas.width / 2, 590);
+  ctx.fillText("Tekan [M] untuk Musik Latar • Tekan [C] untuk Efek Retro CRT", canvas.width / 2, 608);
+
+  ctx.fillStyle = AudioSys.bgmPlaying ? "#1e3a8a" : "#1e293b";
+  ctx.strokeStyle = AudioSys.bgmPlaying ? "#60a5fa" : "#475569";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_BGM.x, BTN_BGM.y, BTN_BGM.w, BTN_BGM.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#f8fafc";
+  ctx.font = "bold 11px monospace";
+  ctx.fillText(AudioSys.bgmPlaying ? "🎵 BGM: ON" : "🔇 BGM: OFF", BTN_BGM.x + BTN_BGM.w / 2, BTN_BGM.y + BTN_BGM.h / 2);
+
+  ctx.fillStyle = STATE.crtEnabled ? "#14532d" : "#1e293b";
+  ctx.strokeStyle = STATE.crtEnabled ? "#4ade80" : "#475569";
+  ctx.beginPath();
+  ctx.roundRect(BTN_CRT.x, BTN_CRT.y, BTN_CRT.w, BTN_CRT.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillText(STATE.crtEnabled ? "📺 CRT: ON" : "📺 CRT: OFF", BTN_CRT.x + BTN_CRT.w / 2, BTN_CRT.y + BTN_CRT.h / 2);
+}
+
+function spawnDamageNumber(x, y, text, color, slow) {
+  STATE.damageNumbers.push({ x, y, text, color, life: 1.0, vy: slow ? -0.25 : -1.8, decay: slow ? 0.007 : 0.02 });
+}
+
+function spawnParticles(x, y, color, count = 15) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1.2 + Math.random() * 4.5;
+    STATE.particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      color,
+      life: 1.0,
+      size: 3 + Math.random() * 3
+    });
+  }
+  while (STATE.particles.length > BALANCE.maxParticles) {
+    STATE.particles.shift();
+  }
+}
+
+function updateAndDrawProjectiles() {
+  for (let i = STATE.projectiles.length - 1; i >= 0; i--) {
+    const p = STATE.projectiles[i];
+    const dx = p.targetX - p.x;
+    const dy = p.targetY - p.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist < 18) {
+      STATE.projectiles.splice(i, 1);
+      resolveProjectile(p);
+    } else {
+      p.x += (dx / dist) * 24;
+      p.y += (dy / dist) * 24;
+
+      ctx.save();
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.trailColor;
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+function drawDungeonBackground() {
+  ctx.fillStyle = "#101322";
+  ctx.fillRect(0, 0, canvas.width, 240);
+
+  ctx.strokeStyle = "#1b2038";
+  ctx.lineWidth = 2;
+  for (let y = 0; y < 240; y += 30) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+    const offset = (y / 30) % 2 === 0 ? 0 : 40;
+    for (let x = offset; x < canvas.width; x += 80) {
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x, y + 30);
+      ctx.stroke();
+    }
+  }
+
+  const torchTime = Date.now() * 0.007;
+  [120, 480, 840].forEach(tx => {
+    ctx.fillStyle = "#3e2723";
+    ctx.fillRect(tx - 4, 100, 8, 22);
+    const r = 14 + Math.sin(torchTime + tx) * 3;
+    const grad = ctx.createRadialGradient(tx, 96, 2, tx, 96, r * 2.8);
+    grad.addColorStop(0, "rgba(255, 215, 64, 0.95)");
+    grad.addColorStop(0.35, "rgba(249, 115, 22, 0.45)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(tx, 96, r * 2.8, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.fillStyle = "#0a0c14";
+  ctx.fillRect(0, 240, canvas.width, 100);
+  ctx.strokeStyle = "#161a2b";
+  ctx.beginPath();
+  ctx.moveTo(0, 240);
+  ctx.lineTo(canvas.width, 240);
+  ctx.stroke();
+
+  for (let x = 0; x < canvas.width; x += 70) {
+    ctx.beginPath();
+    ctx.moveTo(x, 240);
+    ctx.lineTo(x - 40, 340);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "#07080f";
+  ctx.fillRect(0, 340, canvas.width, 310);
+  ctx.strokeStyle = "#1e293b";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(0, 340, canvas.width, 310);
+}
+
+function drawWordGrid() {
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      const tile = GRID.board[r][c];
+      const tx = GRID.startX + c * (GRID.tileSize + GRID.gap);
+      const ty = GRID.startY + r * (GRID.tileSize + GRID.gap) + (tile.animOffsetY || 0);
+
+      const isSelected = STATE.selectedChain.some(p => p.r === r && p.c === c);
+
+      if (isSelected) {
+        ctx.fillStyle = "#2563eb";
+        ctx.strokeStyle = "#93c5fd";
+      } else {
+        if (tile.special === "FIRE") {
+          ctx.fillStyle = "#431407";
+          ctx.strokeStyle = "#f97316";
+        } else if (tile.special === "FROST") {
+          ctx.fillStyle = "#0c2b4e";
+          ctx.strokeStyle = "#93c5fd";
+        } else if (tile.special === "LIGHTNING") {
+          ctx.fillStyle = "#1e1b4b";
+          ctx.strokeStyle = "#67e8f9";
+        } else if (tile.special === "STAR") {
+          ctx.fillStyle = "#422006";
+          ctx.strokeStyle = "#facc15";
+        } else if (tile.special === "MANA") {
+          ctx.fillStyle = "#083344";
+          ctx.strokeStyle = "#06b6d4";
+        } else if (tile.special === "SHIELD") {
+          ctx.fillStyle = "#3f2c06";
+          ctx.strokeStyle = "#eab308";
+        } else if (tile.special === "DOOM") {
+          ctx.fillStyle = "#450a0a";
+          ctx.strokeStyle = "#ef4444";
+        } else if (tile.special === "POISON") {
+          ctx.fillStyle = "#2e1065";
+          ctx.strokeStyle = "#a855f7";
+        } else {
+          ctx.fillStyle = "#1e293b";
+          ctx.strokeStyle = "#334155";
+        }
+      }
+      ctx.lineWidth = isSelected ? 3 : 1.8;
+
+      ctx.beginPath();
+      ctx.roundRect(tx, ty, GRID.tileSize, GRID.tileSize, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      if (!isSelected && tile.special !== "NORMAL") {
+        ctx.font = "10px monospace";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "top";
+        let icon = "🔥";
+        if (tile.special === "FROST") icon = "❄️";
+        else if (tile.special === "LIGHTNING") icon = "⚡";
+        else if (tile.special === "STAR") icon = "⭐";
+        else if (tile.special === "MANA") icon = "💎";
+        else if (tile.special === "SHIELD") icon = "🛡️";
+        else if (tile.special === "DOOM") icon = `💣${tile.doomCount}`;
+        else if (tile.special === "POISON") icon = "☠️";
+        ctx.fillText(icon, tx + GRID.tileSize - 4, ty + 3);
+      }
+
+      ctx.fillStyle = isSelected ? "#ffffff" : "#f1f5f9";
+      ctx.font = "bold 24px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(tile.char, tx + GRID.tileSize / 2, ty + GRID.tileSize / 2);
+    }
+  }
+
+  if (STATE.selectedChain.length > 1) {
+    ctx.strokeStyle = "#60a5fa";
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    STATE.selectedChain.forEach((pos, idx) => {
+      const tile = GRID.board[pos.r][pos.c];
+      const cx = GRID.startX + pos.c * (GRID.tileSize + GRID.gap) + GRID.tileSize / 2;
+      const cy = GRID.startY + pos.r * (GRID.tileSize + GRID.gap) + GRID.tileSize / 2 + (tile.animOffsetY || 0);
+      if (idx === 0) ctx.moveTo(cx, cy);
+      else ctx.lineTo(cx, cy);
+    });
+    ctx.stroke();
+  }
+}
+
+function drawTacticalUI() {
+  const hero = heroes[STATE.activeHeroIndex];
+  const skills = HERO_SKILLS[STATE.activeHeroIndex];
+
+  ctx.fillStyle = AudioSys.bgmPlaying ? "#1e3a8a" : "#1e293b";
+  ctx.strokeStyle = AudioSys.bgmPlaying ? "#60a5fa" : "#475569";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_BGM.x, BTN_BGM.y, BTN_BGM.w, BTN_BGM.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#f8fafc";
+  ctx.font = "bold 11px monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(AudioSys.bgmPlaying ? "🎵 BGM: ON" : "🔇 BGM: OFF", BTN_BGM.x + BTN_BGM.w / 2, BTN_BGM.y + BTN_BGM.h / 2);
+
+  ctx.fillStyle = STATE.crtEnabled ? "#14532d" : "#1e293b";
+  ctx.strokeStyle = STATE.crtEnabled ? "#4ade80" : "#475569";
+  ctx.beginPath();
+  ctx.roundRect(BTN_CRT.x, BTN_CRT.y, BTN_CRT.w, BTN_CRT.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillText(STATE.crtEnabled ? "📺 CRT: ON" : "📺 CRT: OFF", BTN_CRT.x + BTN_CRT.w / 2, BTN_CRT.y + BTN_CRT.h / 2);
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "bold 11px monospace";
+  ctx.fillText(`👑 REKOR KATA: ${STATE.stats.bestWord} (${STATE.stats.bestWordDmg} DMG)`, 20, 25);
+
+  if (STATE.relics.length > 0) {
+    ctx.fillText("RELIK:", 240, 25);
+    STATE.relics.forEach((r, idx) => {
+      ctx.font = "14px monospace";
+      ctx.fillText(r.icon, 290 + idx * 26, 26);
+    });
+  }
+
+  ctx.fillStyle = "#0f172a";
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(295, 360, 155, 50, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  const _a = STATE.wordAnalysis;
+  ctx.textAlign = "left";
+  ctx.font = "bold 10px monospace";
+  ctx.fillStyle = !_a ? "#94a3b8" : _a.syn ? "#facc15" : _a.valid ? "#4ade80" : "#f87171";
+  ctx.fillText(!_a ? "Ketik / Rangkai:" : _a.syn ? "★ SINERGI HERO!" : _a.valid ? "✓ Kata valid" : "✗ Bukan kata (0.6x)", 303, 374);
+
+  ctx.fillStyle = "#facc15";
+  ctx.font = "bold 18px monospace";
+  ctx.fillText(STATE.currentWord || "-", 303, 396);
+
+  const len = STATE.currentWord.length;
+  const mult = _a ? _a.mult : 0;
+  ctx.fillStyle = mult >= 1.8 ? "#22c55e" : (mult > 0 ? "#38bdf8" : "#64748b");
+  ctx.font = "bold 11px monospace";
+  ctx.textAlign = "right";
+  ctx.fillText(len >= 3 ? `${mult.toFixed(1)}x DMG` : "-", 440, 396);
+
+  const canSubmit = len >= 3 && canPlayerAct();
+  ctx.fillStyle = canSubmit ? "#22c55e" : "#1f2937";
+  ctx.strokeStyle = canSubmit ? "#86efac" : "#374151";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(BTN_SUBMIT.x, BTN_SUBMIT.y, BTN_SUBMIT.w, BTN_SUBMIT.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = canSubmit ? "#ffffff" : "#9ca3af";
+  ctx.font = "bold 15px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(canSubmit ? "SERANG! [↵]" : "MIN. 3 HURUF", BTN_SUBMIT.x + BTN_SUBMIT.w / 2, BTN_SUBMIT.y + 28);
+
+  const rushReady = STATE.rushGauge >= 100 && canPlayerAct();
+  ctx.fillStyle = rushReady ? "#d97706" : "#1e293b";
+  ctx.strokeStyle = rushReady ? "#fde047" : "#334155";
+  ctx.lineWidth = rushReady ? 2.5 : 1.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_RUSH.x, BTN_RUSH.y, BTN_RUSH.w, BTN_RUSH.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = rushReady ? "rgba(250, 204, 21, 0.3)" : "rgba(56, 189, 248, 0.15)";
+  ctx.fillRect(BTN_RUSH.x + 2, BTN_RUSH.y + 2, (BTN_RUSH.w - 4) * (STATE.rushGauge / 100), BTN_RUSH.h - 4);
+  ctx.fillStyle = rushReady ? "#ffffff" : "#cbd5e1";
+  ctx.font = "bold 12px monospace";
+  ctx.fillText(rushReady ? "⚡ RUSH SIAP! [U]" : `RUSH: ${Math.round(STATE.rushGauge)}%`, BTN_RUSH.x + BTN_RUSH.w / 2, BTN_RUSH.y + 26);
+
+  ctx.fillStyle = "#334155";
+  ctx.strokeStyle = "#475569";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_CLEAR.x, BTN_CLEAR.y, BTN_CLEAR.w, BTN_CLEAR.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#e2e8f0";
+  ctx.font = "bold 11px monospace";
+  ctx.fillText("BATAL KATA [⌫]", BTN_CLEAR.x + BTN_CLEAR.w / 2, BTN_CLEAR.y + 22);
+
+  ctx.fillStyle = "#1e293b";
+  ctx.beginPath();
+  ctx.roundRect(BTN_SHUFFLE.x, BTN_SHUFFLE.y, BTN_SHUFFLE.w, BTN_SHUFFLE.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "bold 10px monospace";
+  ctx.fillText(`ACAK [R] x${STATE.shuffles}`, BTN_SHUFFLE.x + BTN_SHUFFLE.w / 2, BTN_SHUFFLE.y + 21);
+
+  ctx.fillStyle = "#1e293b";
+  ctx.strokeStyle = "#475569";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_SKIP.x, BTN_SKIP.y, BTN_SKIP.w, BTN_SKIP.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#cbd5e1";
+  ctx.font = "bold 10px monospace";
+  ctx.fillText("BERTAHAN [Tab] +9 MP", BTN_SKIP.x + BTN_SKIP.w / 2, BTN_SKIP.y + 20);
+
+  ctx.fillStyle = "#0c101d";
+  ctx.strokeStyle = "#1e293b";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(465, 360, 500, 275, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#f59e0b";
+  ctx.font = "bold 15px monospace";
+  ctx.fillText(`GILIRAN: ${hero.name.toUpperCase()} (${hero.role})`, 480, 385);
+
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "12px monospace";
+  ctx.fillText(`HP: ${hero.hp}/${hero.maxHp}  |  MP: ${hero.mp}/${hero.maxMp}`, 480, 405);
+  ctx.fillText("Pilih salah satu skill aktif:", 480, 430);
+
+  skills.forEach((sk, idx) => {
+    const btn = SKILL_BTNS[idx];
+    const isSelected = STATE.selectedSkillIndex === idx;
+
+    ctx.fillStyle = isSelected ? "#1e3a8a" : "#1e293b";
+    ctx.strokeStyle = isSelected ? "#60a5fa" : "#334155";
+    ctx.lineWidth = isSelected ? 2.5 : 1.5;
+
+    ctx.beginPath();
+    ctx.roundRect(btn.x, btn.y, btn.w, btn.h, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = isSelected ? "#ffffff" : "#e2e8f0";
+    ctx.font = "bold 13px monospace";
+    ctx.fillText(`[${idx+1}] ${sk.name}`, btn.x + 12, btn.y + 24);
+
+    ctx.fillStyle = hero.mp >= sk.mpCost ? "#38bdf8" : "#ef4444";
+    ctx.font = "11px monospace";
+    ctx.fillText(`Biaya: ${sk.mpCost} MP`, btn.x + 12, btn.y + 46);
+
+    ctx.fillStyle = "#facc15";
+    ctx.textAlign = "right";
+    ctx.fillText(`Pwr: ${sk.basePower}`, btn.x + btn.w - 12, btn.y + 24);
+    ctx.textAlign = "left";
+  });
+
+  const curSkill = skills[STATE.selectedSkillIndex];
+  ctx.fillStyle = "#38bdf8";
+  ctx.font = "italic 12px monospace";
+  ctx.fillText(`* ${curSkill.desc}`, 480, 550);
+
+  const previewMult = len >= 3 ? mult : 1.0;
+  const estimated = Math.round(curSkill.basePower * previewMult);
+  ctx.fillStyle = "#cbd5e1";
+  ctx.font = "12px monospace";
+  ctx.fillText(`Estimasi Efek: ${curSkill.basePower} x ${previewMult.toFixed(1)} = `, 480, 585);
+  ctx.fillStyle = "#4ade80";
+  ctx.font = "bold 14px monospace";
+  ctx.fillText(`${estimated} POIN`, 715, 585);
+
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "11px monospace";
+  ctx.textAlign = "right";
+  ctx.fillText(`RUANG DUNGEON: ${STATE.wave}/${WAVES.length}`, 950, 385);
+}
+
+function drawCampfireScene() {
+  ctx.fillStyle = "#05070d";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const fireTime = Date.now() * 0.008;
+  const rad = 70 + Math.sin(fireTime) * 10;
+  const grad = ctx.createRadialGradient(canvas.width / 2, 200, 10, canvas.width / 2, 200, rad * 3);
+  grad.addColorStop(0, "rgba(251, 191, 36, 0.85)");
+  grad.addColorStop(0.3, "rgba(249, 115, 22, 0.45)");
+  grad.addColorStop(0.7, "rgba(180, 83, 9, 0.15)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(canvas.width / 2, 200, rad * 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#451a03";
+  ctx.fillRect(canvas.width / 2 - 25, 205, 50, 10);
+  ctx.fillStyle = "#78350f";
+  ctx.fillRect(canvas.width / 2 - 18, 200, 36, 8);
+
+  if (Math.random() < 0.4) {
+    STATE.campfireSparks.push({
+      x: canvas.width / 2 + (Math.random() - 0.5) * 24,
+      y: 195,
+      vx: (Math.random() - 0.5) * 1.5,
+      vy: -1.5 - Math.random() * 2,
+      life: 1.0
+    });
+  }
+
+  for (let i = STATE.campfireSparks.length - 1; i >= 0; i--) {
+    const sp = STATE.campfireSparks[i];
+    sp.x += sp.vx;
+    sp.y += sp.vy;
+    sp.life -= 0.03;
+    if (sp.life <= 0) {
+      STATE.campfireSparks.splice(i, 1);
+    } else {
+      ctx.fillStyle = `rgba(253, 224, 71, ${sp.life})`;
+      ctx.fillRect(sp.x, sp.y, 3, 3);
+    }
+  }
+
+  heroes.forEach((h, idx) => {
+    const cx = canvas.width / 2 - 165 + idx * 110;
+    const cy = 210;
+    const spriteCanvas = SpriteLibrary.sprites[`${h.spriteKey}_idle_0`];
+    if (spriteCanvas) {
+      ctx.drawImage(spriteCanvas, 0, 0, 24, 24, cx - 36, cy - 36, 72, 72);
+    }
+  });
+
+  ctx.fillStyle = "#facc15";
+  ctx.font = "bold 26px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("PERISTIRAHATAN API UNGGUN", canvas.width / 2, 75);
+
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "14px monospace";
+  ctx.fillText("Party pulih +40% HP & MP. Pilih 1 Relik Kuno untuk memperkuat perjalanan:", canvas.width / 2, 105);
+
+  const cardW = 240;
+  const cardH = 140;
+  const startX = (canvas.width - (STATE.offeredRelics.length * cardW + (STATE.offeredRelics.length - 1) * 20)) / 2;
+  const cardY = 320;
+
+  STATE.offeredRelics.forEach((relic, idx) => {
+    const rx = startX + idx * (cardW + 20);
+    ctx.fillStyle = "#0f172a";
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(rx, cardY, cardW, cardH, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = "32px monospace";
+    ctx.fillText(relic.icon, rx + cardW / 2, cardY + 45);
+
+    ctx.fillStyle = "#f8fafc";
+    ctx.font = "bold 15px monospace";
+    ctx.fillText(relic.name, rx + cardW / 2, cardY + 75);
+
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "11px monospace";
+    ctx.fillText(relic.desc, rx + cardW / 2, cardY + 105);
+
+    ctx.fillStyle = "#38bdf8";
+    ctx.font = "bold 11px monospace";
+    ctx.fillText("[KLIK UNTUK MEMILIH]", rx + cardW / 2, cardY + 128);
+  });
+}
+
+function drawGameOverlay() {
+  if (isCombatFinished() && !STATE.overSince) {
+    STATE.overSince = performance.now();
+  }
+
+  if (isCombatFinished()) {
+    ctx.fillStyle = "rgba(7, 8, 13, 0.92)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const isWin = STATE.turnPhase === "VICTORY";
+    ctx.fillStyle = isWin ? "#facc15" : "#ef4444";
+    ctx.font = "bold 38px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(isWin ? "DUNGEON DITAKLUKKAN!" : "SELURUH PARTY GUGUR!", canvas.width / 2, 200);
+
+    ctx.fillStyle = "#0f172a";
+    ctx.strokeStyle = isWin ? "#eab308" : "#64748b";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(canvas.width / 2 - 220, 240, 440, 210, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#38bdf8";
+    ctx.font = "bold 16px monospace";
+    ctx.fillText("📜 CATATAN EKSPEDISI DUNGEON", canvas.width / 2, 275);
+
+    ctx.fillStyle = "#e2e8f0";
+    ctx.font = "13px monospace";
+    ctx.textAlign = "left";
+    const lx = canvas.width / 2 - 180;
+    ctx.fillText(`• Total Kata Dirangkai: ${STATE.stats.wordsCount} Kata`, lx, 315);
+    ctx.fillText(`• Kata Terkuat: ${STATE.stats.bestWord} (${STATE.stats.bestWordDmg} DMG)`, lx, 345);
+    ctx.fillText(`• Total Kerusakan: ${STATE.stats.totalDamageDealt} Poin`, lx, 375);
+    ctx.fillText(`• Relik Didapatkan: ${STATE.relics.length} Artefak`, lx, 405);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "bold 13px monospace";
+    ctx.fillText("Klik di mana saja untuk memulai ekspedisi baru", canvas.width / 2, 490);
+  }
+}
+
+let crtCanvas = null;
+function initCrtOverlay() {
+  crtCanvas = document.createElement("canvas");
+  crtCanvas.width = canvas.width;
+  crtCanvas.height = canvas.height;
+  const cctx = crtCanvas.getContext("2d");
+
+  cctx.fillStyle = "rgba(0, 0, 0, 0.22)";
+  for (let y = 0; y < canvas.height; y += 3) {
+    cctx.fillRect(0, y, canvas.width, 1.2);
+  }
+
+  const vig = cctx.createRadialGradient(
+    canvas.width / 2, canvas.height / 2, canvas.height * 0.45,
+    canvas.width / 2, canvas.height / 2, canvas.height * 0.85
+  );
+  vig.addColorStop(0, "rgba(0,0,0,0)");
+  vig.addColorStop(1, "rgba(0,0,0,0.5)");
+  cctx.fillStyle = vig;
+  cctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawCrtEffect() {
+  if (!STATE.crtEnabled || !crtCanvas) return;
+  ctx.drawImage(crtCanvas, 0, 0);
+}
+
+let lastFrameTime = 0;
+function gameLoop(timestamp) {
+  STATE.animTimer = timestamp;
+
+  const dt = lastFrameTime ? Math.min(100, timestamp - lastFrameTime) : 16.6;
+  lastFrameTime = timestamp;
+
+  if (STATE.hitFreezeTimer > 0) {
+    STATE.hitFreezeTimer -= dt;
+    if (STATE.hitFreezeTimer > 0) {
+      requestAnimationFrame(gameLoop);
+      return;
+    }
+    STATE.hitFreezeTimer = 0;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+
+  if (STATE.screenShake > 0) {
+    const rx = (Math.random() - 0.5) * STATE.screenShake;
+    const ry = (Math.random() - 0.5) * STATE.screenShake;
+    ctx.translate(rx, ry);
+    STATE.screenShake = Math.max(0, STATE.screenShake - 0.6);
+  }
+
+  if (STATE.turnPhase === "TITLE") {
+    drawTitleScreen();
+  } else if (STATE.turnPhase === "CAMPFIRE") {
+    drawCampfireScene();
+  } else {
+    updateGridPhysics();
+    updateHeroWalking(dt);
+    drawDungeonBackground();
+
+    const isWalkingPhase = STATE.turnPhase === "HERO_WALK_IN" || STATE.turnPhase === "HERO_WALK_OUT";
+
+    if (!isWalkingPhase || STATE.turnPhase === "HERO_WALK_IN") {
+      normalizeSelectedTarget();
+      enemies.forEach((enemy, idx) => {
+        const isTargeted = STATE.selectedEnemyIndex === idx && !isWalkingPhase;
+        drawCharacterSprite(enemy, false, isTargeted, false);
+      });
+    }
+
+    heroes.forEach((hero, idx) => {
+      const isCurrent = STATE.turnPhase === "HERO_INPUT" && STATE.activeHeroIndex === idx;
+      drawCharacterSprite(hero, isCurrent, false, isWalkingPhase);
+    });
+
+    updateAndDrawProjectiles();
+    ctx.restore();
+    ctx.save();
+
+    if (!isWalkingPhase) {
+      drawWordGrid();
+      drawTacticalUI();
+    } else {
+      ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
+      ctx.fillRect(0, 480, canvas.width, 100);
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 480, canvas.width, 100);
+
+      ctx.fillStyle = "#facc15";
+      ctx.font = "bold 20px monospace";
+      ctx.textAlign = "center";
+      if (STATE.turnPhase === "HERO_WALK_IN") {
+        ctx.fillText(`MEMASUKI RUANG DUNGEON ${STATE.wave}...`, canvas.width / 2, 520);
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "13px monospace";
+        ctx.fillText("Party bergerak menuju posisi pertempuran!", canvas.width / 2, 548);
+      } else {
+        ctx.fillText("RUANG DUNGEON DIBERSIHKAN! BERGERAK MAJU...", canvas.width / 2, 520);
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "13px monospace";
+        ctx.fillText("Party melangkah keluar menuju perkemahan api unggun.", canvas.width / 2, 548);
+      }
+    }
+  }
+
+  for (let i = STATE.particles.length - 1; i >= 0; i--) {
+    const p = STATE.particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= 0.035;
+    if (p.life <= 0) {
+      STATE.particles.splice(i, 1);
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = p.life;
+      ctx.fillRect(p.x, p.y, p.size, p.size);
+      ctx.globalAlpha = 1.0;
+    }
+  }
+
+  for (let i = STATE.damageNumbers.length - 1; i >= 0; i--) {
+    const d = STATE.damageNumbers[i];
+    d.y += d.vy;
+    d.life -= d.decay || 0.02;
+    if (d.life <= 0) {
+      STATE.damageNumbers.splice(i, 1);
+    } else {
+      ctx.fillStyle = d.color;
+      ctx.globalAlpha = d.life;
+      ctx.font = "bold 18px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(d.text, d.x, d.y);
+      ctx.globalAlpha = 1.0;
+    }
+  }
+
+  drawGameOverlay();
+  drawCrtEffect();
+  ctx.restore();
+
+  requestAnimationFrame(gameLoop);
+}
+
+SpriteLibrary.init();
+initGrid();
+initCrtOverlay();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
