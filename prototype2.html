@@ -2068,10 +2068,22 @@ function skipCurrentWord(){
     return;
   }
   STATE.skipped = true;
-  STATE.typedChars = STATE.currentWord.length;
-  spawnDamageNumber(canvas.width/2, 330, "SKIP KATA", "#fb923c", true);
+
+  // Skip = TIDAK ada damage, TIDAK ada charge, TIDAK ada streak.
+  // Hukuman: streak & combo di-reset.
+  STATE.turnWordStreak = 0;
+  STATE.combo = 0;
+  STATE.wrongKeysInWord = 0;
+
+  // Feedback visual & audio
+  const hero = heroes[STATE.activeHeroIndex];
+  spawnDamageNumber(hero.x, hero.y - 90, "SKIP! (no charge)", "#fb923c", true);
+  spawnDamageNumber(canvas.width/2, 330, "⏭ KATA DI-SKIP", "#fb923c", true);
   AudioSys.playSelect(320);
-  completeWord();
+  STATE.screenShake = 3;
+
+  // Update kata tanpa menyentuh stats/damage
+  advanceToNextWord();
 }
 function skipTurn(){
   if(STATE.turnPhase!=="HERO_READY") return;
