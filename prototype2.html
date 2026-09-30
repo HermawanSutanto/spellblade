@@ -3,7 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Spellblade">
+<meta name="theme-color" content="#090b14">
 <title>Spellblade: Typing Dungeon Party</title>
+<style>
+  /* ... style yang sudah ada ... */
+  /* Sembunyikan padding atas saat standalone */
+  @media (display-mode: standalone){
+    body{padding:0}
+  }
+</style>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;user-select:none;-webkit-user-select:none}
 body{background:#040508;color:#e2e8f0;font-family:'Courier New',Courier,monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;overflow-x:hidden;padding:6px}
@@ -1490,6 +1502,8 @@ const STATE={
   wave:1,rushGauge:0,partyGuardTurns:0,
   overSince:0,animTimer:0,screenShake:0,hitFreezeTimer:0,
   crtEnabled:true,relics:[],offeredRelics:[],campfireSparks:[],
+  rushActive:false, rushStartTime:0,
+
   // ── TYPING (per-kata) ──
   currentWord:"",typedChars:0,wordStartTime:0,
   wordModifier:null,wordThemeMatch:false,wordSource:"EASY",
@@ -1546,7 +1560,11 @@ function isThemeMatch(word, hero){ return THEMES[hero.spriteKey] && THEMES[hero.
    COMBAT HELPERS
    ========================================================= */
 function changeMp(entity,delta){if(!entity)return 0;const before=entity.mp;entity.mp=Math.max(0,Math.min(entity.maxMp,entity.mp+Math.round(delta)));return entity.mp-before;}
-function beginAction(){STATE.turnId++;STATE.projectileLedger={actionId:STATE.turnId,pending:0};return STATE.turnId;}
+function beginAction(){
+  STATE.turnId++;
+  STATE.projectileLedger={actionId:STATE.turnId,pending:0,onAllHit:null};
+  return STATE.turnId;
+}
 function isActionValid(id){return id===STATE.turnId&&!isCombatFinished();}
 function isCombatFinished(){return STATE.turnPhase==="GAME_OVER"||STATE.turnPhase==="VICTORY";}
 function canPlayerAct(){return (STATE.turnPhase==="HERO_READY"||STATE.turnPhase==="HERO_TYPING"||STATE.turnPhase==="HERO_TURN_END")&&!isCombatFinished();}
@@ -1642,6 +1660,11 @@ function resolveProjectile(p){
   if(isActionValid(p.actionId)&&typeof p.onHit==="function")p.onHit();
   if(STATE.projectileLedger.actionId===p.actionId){
     STATE.projectileLedger.pending=Math.max(0,STATE.projectileLedger.pending-1);
+    if(STATE.projectileLedger.pending===0 && typeof STATE.projectileLedger.onAllHit==="function"){
+      const cb=STATE.projectileLedger.onAllHit;
+      STATE.projectileLedger.onAllHit=null;
+      cb();
+    }
   }
 }
 
@@ -1668,10 +1691,10 @@ function generateLetterBubbles(word){
   const cols = Math.min(5, Math.ceil(n/2));
   const rows = Math.ceil(n/cols);
   const panelX0 = 45, panelX1 = 435;
-  const panelY0 = 470, panelY1 = 622;
+  const panelY0 = 480, panelY1 = 578;
   const cellW = (panelX1-panelX0)/cols;
   const cellH = (panelY1-panelY0)/rows;
-  const radius = Math.min(cellW, cellH) * 0.40;
+  const radius = Math.min(cellW, cellH) * 0.46;
   const now = performance.now();
   const bubbles = all.map((ch,i)=>{
     const r = Math.floor(i/cols);
@@ -1827,11 +1850,13 @@ function executeAccumulatedAttack(){
     return;
   }
 
-  // Animasi hero
+   // Animasi hero
+  hero.actToken = (hero.actToken||0) + 1;
+  const tokenAttack = hero.actToken;
   hero.isActing = true;
   hero.actVariant = skill.animVariant || 0;
   hero.actStart = performance.now();
-  setTimeout(()=>{ if(hero) hero.isActing=false; }, 900);
+  setTimeout(()=>{ if(hero && hero.actToken===tokenAttack) hero.isActing=false; }, 900);
 
   STATE.screenShake = Math.min(22, 6 + STATE.turnWordsTyped*1.5);
   STATE.hitFreezeTimer = 65;
@@ -1878,28 +1903,44 @@ function executeAccumulatedAttack(){
   // ── Efek modifier yang terkumpul selama sesi ──
   // Elemental modifiers only affect offensive skills. Utility modifiers
   // such as MANA/SHIELD remain valid for healing/support skills.
+  // ── Efek modifier yang terkumpul selama sesi ──
   const offensiveSkill = handler === "SINGLE_ATTACK" || handler === "AOE_ATTACK" || handler === "SMITE_HEAL";
-  if(STATE.turnModifiers && STATE.turnModifiers.size > 0 && offensiveSkill && target){
-    if(STATE.turnModifiers.has("FIRE") && target.hp>0){
-      target.burnTurns = 2;
-      spawnDamageNumber(target.x, target.y-90, "🔥 TERBAKAR!", "#f97316");
-    }
-    if(STATE.turnModifiers.has("FROST") && target.hp>0){
-      target.frozen = true;
-      target.intent = {type:"FROZEN",desc:"❄️ Membeku"};
-      AudioSys.playFreeze();
-      spawnDamageNumber(target.x, target.y-90, "❄️ BEKU!", "#93c5fd");
-    }
-    if(STATE.turnModifiers.has("LIGHTNING")){
-      AudioSys.playZap();
-      enemies.forEach(en=>{
-        if(en!==target && en.hp>0) applyDamage(hero,en,BALANCE.chainZapDamage,{label:`-${BALANCE.chainZapDamage} ⚡`,color:"#67e8f9",particleColor:"#38bdf8"});
-      });
-    }
+  if(STATE.turnModifiers && STATE.turnModifiers.size > 0){
+    // Utility modifiers — berlaku di SEMUA skill (termasuk heal)
     if(STATE.turnModifiers.has("MANA")) changeMp(hero, BALANCE.manaTileMp);
     if(STATE.turnModifiers.has("SHIELD")) STATE.partyGuardTurns = 1;
-  }
 
+    // Elemental modifiers — hanya untuk skill ofensif
+    if(offensiveSkill){
+      const isAoe = handler === "AOE_ATTACK";
+      const elementalTargets = isAoe
+        ? enemies.filter(e=>e.hp>0)
+        : (target && target.hp>0 ? [target] : []);
+
+      if(STATE.turnModifiers.has("FIRE")){
+        elementalTargets.forEach(en=>{
+          en.burnTurns = 2;
+          spawnDamageNumber(en.x, en.y-90, "🔥 TERBAKAR!", "#f97316");
+        });
+      }
+      if(STATE.turnModifiers.has("FROST")){
+        elementalTargets.forEach(en=>{
+          en.frozen = true;
+          en.intent = {type:"FROZEN",desc:"❄️ Membeku"};
+          spawnDamageNumber(en.x, en.y-90, "❄️ BEKU!", "#93c5fd");
+        });
+        if(elementalTargets.length) AudioSys.playFreeze();
+      }
+      if(STATE.turnModifiers.has("LIGHTNING")){
+        AudioSys.playZap();
+        enemies.forEach(en=>{
+          if(en!==target && en.hp>0){
+            applyDamage(hero,en,BALANCE.chainZapDamage,{label:`-${BALANCE.chainZapDamage} ⚡`,color:"#67e8f9",particleColor:"#38bdf8"});
+          }
+        });
+      }
+    }
+  }
   // Banner besar
   spawnDamageNumber(canvas.width/2, 250, `⚡ TOTAL ${totalPower} ⚡`, isCrit?"#fbbf24":"#facc15", true);
   if(isCrit) spawnDamageNumber(canvas.width/2, 290, "★ CRITICAL STRIKE! ★", "#fbbf24", true);
@@ -1995,11 +2036,15 @@ function completeWord(){
   }
   STATE.turnWordsHistory.push({word:STATE.currentWord, dmg:totalPower, speed:speedMult});
 
-  // Animasi hero singkat (tanpa damage)
+  // Animasi hero singkat (tanpa damage).
+  // Gunakan token agar callback dari kata sebelumnya tidak mematikan
+  // animasi attack berikutnya.
+  hero.actToken = (hero.actToken||0) + 1;
+  const tokenPerWord = hero.actToken;
   hero.isActing = true;
   hero.actVariant = skill.animVariant || 0;
   hero.actStart = performance.now();
-  setTimeout(()=>{ if(hero) hero.isActing=false; }, 450);
+  setTimeout(()=>{ if(hero && hero.actToken===tokenPerWord) hero.isActing=false; }, 450);
 
   // Relic quill — heal per kata sempurna
   if(isPerfect && STATE.relics.some(r=>r.id==="quill") && STATE.currentWord.length>=5){
@@ -2041,33 +2086,62 @@ function skipTurn(){
 }
 function triggerPartyRush(){
   if(STATE.turnPhase!=="HERO_READY") return;
-  if(STATE.rushGauge<100){spawnDamageNumber(canvas.width/2,330,"METERAN BELUM PENUH!","#f87171");AudioSys.playSelect(220);return;}
+  if(STATE.rushGauge<100){
+    spawnDamageNumber(canvas.width/2,330,"METERAN BELUM PENUH!","#f87171");
+    AudioSys.playSelect(220);
+    return;
+  }
   const actionId=beginAction();
-  STATE.rushGauge=0;STATE.turnPhase="HERO_ACTION";
-  AudioSys.playSpecial();STATE.screenShake=18;STATE.hitFreezeTimer=70;
-  spawnDamageNumber(canvas.width/2,210,"⚡ ALL-OUT PARTY RUSH! ⚡","#facc15",true);
+  STATE.rushGauge=0;
+  STATE.turnPhase="HERO_ACTION";
+  STATE.rushActive=true;
+  STATE.rushStartTime=performance.now();
+  AudioSys.playSpecial();
+  STATE.screenShake=20;
+  STATE.hitFreezeTimer=70;
+
   const alive=heroes.filter(h=>h.hp>0);
   const target=getSelectedTarget();
-  if(!target||alive.length===0){STATE.projectileLedger={actionId:null,pending:0};finishPartyRush(actionId);return;}
-  STATE.projectileLedger={actionId,pending:alive.length};
+  if(!target||alive.length===0){
+    STATE.projectileLedger={actionId,pending:0,onAllHit:null};
+    STATE.rushActive=false;
+    finishPartyRush(actionId);
+    return;
+  }
+  // Ledger dengan callback ketika semua projectile selesai.
+  STATE.projectileLedger={
+    actionId,
+    pending:alive.length,
+    onAllHit:()=>{ setTimeout(()=>finishPartyRush(actionId), 350); }
+  };
   alive.forEach((h,idx)=>{
-    h.isActing=true;h.actVariant=idx%2;h.actStart=performance.now()+idx*160;
+    h.isActing=true;
+    h.actVariant=idx%2;
+    h.actStart=performance.now()+idx*160;
+    h.rushGlowUntil=performance.now()+idx*160+900;
     setTimeout(()=>{
       if(!isActionValid(actionId)||isCombatFinished()) return;
       const tg=getSelectedTarget();
       if(!tg){
         STATE.projectileLedger.pending=Math.max(0,STATE.projectileLedger.pending-1);
-        if(STATE.projectileLedger.pending===0) finishPartyRush(actionId);
+        if(STATE.projectileLedger.pending===0 && typeof STATE.projectileLedger.onAllHit==="function"){
+          const cb=STATE.projectileLedger.onAllHit;
+          STATE.projectileLedger.onAllHit=null;
+          cb();
+        }
         return;
       }
       createProjectile({
         actionId,countPending:false,
         x:h.x-20,y:h.y-10,targetX:tg.x,targetY:tg.y,
         color:idx===0?"#f8fafc":idx===1?"#4ade80":idx===2?"#38bdf8":"#facc15",
-        trailColor:"#fbbf24",size:22,type:"rush",
+        trailColor:"#fbbf24",size:26,type:"rush",
         onHit:()=>{
           const fresh=(tg&&tg.hp>0)?tg:getSelectedTarget();
-          if(fresh) applyDamage(h,fresh,25+Math.floor(Math.random()*10),{color:"#facc15",particleColor:"#fbbf24",particleCount:18});
+          if(fresh){
+            applyDamage(h,fresh,25+Math.floor(Math.random()*10),{color:"#facc15",particleColor:"#fbbf24",particleCount:22});
+            STATE.screenShake=Math.max(STATE.screenShake, 7);
+          }
         }
       });
     },idx*160);
@@ -2075,8 +2149,9 @@ function triggerPartyRush(){
 }
 function finishPartyRush(actionId){
   if(!isActionValid(actionId)||isCombatFinished()) return;
-  heroes.forEach(h=>{if(h)h.isActing=false;});
-  setTimeout(()=>{if(!isActionValid(actionId)||isCombatFinished())return;advanceTurn();},400);
+  heroes.forEach(h=>{ if(h) h.isActing=false; });
+  STATE.rushActive=false;
+  setTimeout(()=>{ if(!isActionValid(actionId)||isCombatFinished()) return; advanceTurn(); }, 400);
 }
 function toggleInputMode(){
   STATE.inputMode = STATE.inputMode === "TAP" ? "TYPE" : "TAP";
@@ -2100,7 +2175,9 @@ function resetGame(){
   STATE.relics=[];
   STATE.offeredRelics=[];
   STATE.partyGuardTurns=0;
-  STATE.projectileLedger={actionId:null,pending:0};
+  STATE.rushActive=false;
+  STATE.rushStartTime=0;
+  STATE.projectileLedger={actionId:null,pending:0,onAllHit:null};
   STATE.stats={wordsCount:0,bestWord:"-",bestWordDmg:0,totalDamageDealt:0,bestSpeed:0};
   STATE.projectiles=[]; STATE.particles=[]; STATE.damageNumbers=[];
   STATE.combo=0; STATE.maxCombo=0; STATE.wordsPerfect=0;
@@ -2119,6 +2196,7 @@ function resetGame(){
     h.isActing=false; h.stunned=false; h.frozen=false;
     h.burnTurns=0; h.poisonTurns=0; h.intent=null;
     h.hurtTimer=0; h.deathTime=0; h.actStart=0; h.actVariant=0;
+    h.actToken=0;
   });
   enemies=makeWave(1);
 }
@@ -2185,6 +2263,13 @@ function executeEnemyTurns(){
   aliveEnemies.forEach(en=>{
     if(en.burnTurns>0&&en.hp>0){applyDamage(null,en,BALANCE.burnDamage,{label:`-${BALANCE.burnDamage} (BURN)`,color:"#f97316",particleColor:"#f97316",particleCount:14,yOffset:55});en.burnTurns--;}
     if(en.poisonTurns>0&&en.hp>0){applyDamage(null,en,10,{label:`-10 (RACUN)`,color:"#4ade80",particleColor:"#22c55e",particleCount:14,yOffset:65});en.poisonTurns--;}
+  });
+  // Tick poison pada HERO (dari serangan POISON_SPIT musuh)
+  heroes.forEach(h=>{
+    if(h.hp>0 && h.poisonTurns>0){
+      applyDamage(null, h, 8, {label:`-8 (RACUN)`,color:"#4ade80",particleColor:"#22c55e",particleCount:12,yOffset:65});
+      h.poisonTurns--;
+    }
   });
   if(enemies.every(e=>e.hp<=0)){advanceTurn();return;}
   if(!isActionValid(actionId)||isCombatFinished()) return;
@@ -2365,6 +2450,31 @@ function drawCharacterSprite(entity,isCurrentTurn,isTargeted,isWalking=false){
     ctx.strokeStyle="rgba(250,204,21,0.75)";ctx.lineWidth=2.5;
     ctx.beginPath();ctx.arc(finalX,drawY+6,48,0,Math.PI*2);ctx.stroke();
   }
+  // === RUSH GLOW: cincin emas + partikel mengelilingi hero saat rush ===
+  if(entity.rushGlowUntil && now < entity.rushGlowUntil && !isDead){
+    const t = (entity.rushGlowUntil - now) / 900; // 1 → 0
+    const alpha = Math.max(0, Math.min(1, t));
+    ctx.save();
+    // Cincin utama
+    ctx.strokeStyle=`rgba(251,191,36,${alpha*0.9})`;
+    ctx.lineWidth=3.5;
+    const pulse = Math.sin(now*0.012)*4;
+    ctx.beginPath();ctx.arc(finalX, drawY+6, 52+pulse, 0, Math.PI*2);ctx.stroke();
+    // Cincin luar tipis
+    ctx.strokeStyle=`rgba(253,224,71,${alpha*0.5})`;
+    ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(finalX, drawY+6, 60+pulse*1.4, 0, Math.PI*2);ctx.stroke();
+    // Partikel mengorbit
+    for(let i=0;i<6;i++){
+      const ang = now*0.004 + i*(Math.PI*2/6);
+      const rr = 58+pulse;
+      const px = finalX + Math.cos(ang)*rr;
+      const py = drawY + 6 + Math.sin(ang)*rr*0.35;
+      ctx.fillStyle=`rgba(253,224,71,${alpha})`;
+      ctx.fillRect(px-2, py-2, 4, 4);
+    }
+    ctx.restore();
+  }
   if(spriteCanvas){
     const sw=SPRITE_SIZE*SPRITE_SCALE;
     const sh=SPRITE_SIZE*SPRITE_SCALE;
@@ -2528,6 +2638,84 @@ function updateAndDrawProjectiles(){
     ctx.restore();
   }
 }
+function toggleFullscreen(){
+  const el = document.documentElement;
+  const isFs = document.fullscreenElement || document.webkitFullscreenElement;
+  if(!isFs){
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    if(req) req.call(el).catch(()=>{});
+  } else {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+    if(exit) exit.call(document).catch(()=>{});
+  }
+  AudioSys.playSelect(500);
+}
+function isFullscreenActive(){
+  return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+function drawRushGauge(){
+  const ready = STATE.rushGauge >= 100;
+  const canUse = STATE.turnPhase === "HERO_READY" && ready;
+  const pulse = ready ? Math.sin(performance.now()*0.008)*2 : 0;
+
+  // Background tombol
+  let bg, stroke;
+  if(canUse){
+    bg = "#d97706"; stroke = "#fde047";
+  } else if(ready){
+    bg = "#78350f"; stroke = "#fbbf24";
+  } else {
+    bg = "#1e293b"; stroke = "#334155";
+  }
+  ctx.fillStyle = bg;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = canUse ? 2.5 : 1.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_RUSH.x, BTN_RUSH.y + pulse, BTN_RUSH.w, BTN_RUSH.h, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  // Fill bar progress
+  const pct = STATE.rushGauge / 100;
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(BTN_RUSH.x + 2, BTN_RUSH.y + 2, (BTN_RUSH.w - 4) * pct, BTN_RUSH.h - 4, 4);
+  ctx.clip();
+  const grad = ctx.createLinearGradient(BTN_RUSH.x, 0, BTN_RUSH.x + BTN_RUSH.w, 0);
+  if(ready){
+    grad.addColorStop(0, "#fbbf24");
+    grad.addColorStop(1, "#f59e0b");
+  } else {
+    grad.addColorStop(0, "#0ea5e9");
+    grad.addColorStop(1, "#38bdf8");
+  }
+  ctx.fillStyle = grad;
+  ctx.fillRect(BTN_RUSH.x, BTN_RUSH.y, BTN_RUSH.w * pct, BTN_RUSH.h);
+  ctx.restore();
+
+  // Teks
+  ctx.fillStyle = canUse ? "#ffffff" : (ready ? "#fde047" : "#cbd5e1");
+  ctx.font = "bold 11px monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const label = canUse ? "⚡ RUSH! [F4]" : `⚡ RUSH ${Math.round(STATE.rushGauge)}%`;
+  ctx.fillText(label, BTN_RUSH.x + BTN_RUSH.w/2, BTN_RUSH.y + BTN_RUSH.h/2 + pulse);
+
+  // Tombol Fullscreen
+  const fsOn = isFullscreenActive();
+  ctx.fillStyle = fsOn ? "#14532d" : "#1e293b";
+  ctx.strokeStyle = fsOn ? "#4ade80" : "#475569";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(BTN_FULLSCREEN.x, BTN_FULLSCREEN.y, BTN_FULLSCREEN.w, BTN_FULLSCREEN.h, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#f8fafc";
+  ctx.font = "bold 11px monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(fsOn ? "⛶ EXIT FS" : "⛶ FULLSCREEN", BTN_FULLSCREEN.x + BTN_FULLSCREEN.w/2, BTN_FULLSCREEN.y + BTN_FULLSCREEN.h/2);
+}
 
 /* =========================================================
    TYPING UI — 3 FASE + TAP mode
@@ -2539,6 +2727,7 @@ function drawTypingPanel(){
   // Panel kiri
   ctx.fillStyle="#0c101d";ctx.strokeStyle="#1e293b";ctx.lineWidth=2;
   ctx.beginPath();ctx.roundRect(20,360,440,275,8);ctx.fill();ctx.stroke();
+  drawRushGauge();
 
   // ══ FASE 1: HERO_READY ══
   if(STATE.turnPhase==="HERO_READY"){
@@ -2552,12 +2741,25 @@ function drawTypingPanel(){
     ctx.fillText("Kata pertama:", 240, 458);
     ctx.fillStyle="#facc15";ctx.font="bold 28px monospace";
     ctx.fillText(STATE.currentWord || "...", 240, 490);
-    ctx.fillStyle="#475569";ctx.font="10px monospace";
-    ctx.fillText("[1]/[2] Skill  •  [Tab] Bertahan +9 MP  •  [F4] Party Rush  •  [F1] Mode", 240, 522);
+       ctx.fillStyle="#475569";ctx.font="10px monospace";
+    ctx.fillText("[1]/[2] Skill  •  [Tab] Bertahan +9 MP  •  [F1] Mode", 240, 512);
+    // Tombol Party Rush (mobile-friendly) — muncul di panel HERO_READY
+    if(STATE.rushGauge >= 100){
+      const pr = Math.sin(performance.now()*0.006)*2;
+      ctx.fillStyle="#d97706";ctx.strokeStyle="#fde047";ctx.lineWidth=2.5;
+      ctx.beginPath();ctx.roundRect(36, 530+pr, 408, 30, 6);ctx.fill();ctx.stroke();
+      ctx.fillStyle="#ffffff";ctx.font="bold 14px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+      ctx.fillText("⚡ PARTY RUSH SIAP! [F4 / Tap]", 240, 545+pr);
+    } else {
+      ctx.fillStyle="#1e293b";ctx.strokeStyle="#334155";ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.roundRect(36, 530, 408, 30, 6);ctx.fill();ctx.stroke();
+      ctx.fillStyle="#64748b";ctx.font="bold 12px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+      ctx.fillText(`⚡ RUSH belum siap — ${Math.round(STATE.rushGauge)}%`, 240, 545);
+    }
     const pulse = Math.sin(performance.now()*0.005)*2;
     ctx.fillStyle="#15803d";ctx.strokeStyle="#4ade80";ctx.lineWidth=3;
     ctx.beginPath();ctx.roundRect(36, 620+pulse, 408, 26, 6);ctx.fill();ctx.stroke();
-    ctx.fillStyle="#ffffff";ctx.font="bold 15px monospace";ctx.textAlign="center";
+    ctx.fillStyle="#ffffff";ctx.font="bold 15px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
     ctx.fillText(STATE.inputMode==="TAP" ? "▶ MULAI SESI TAP  [ENTER]" : "▶ MULAI SESI KETIK  [ENTER]", 240, 634+pulse);
   }
 
@@ -2671,18 +2873,13 @@ function drawTypingPanel(){
     ctx.fillStyle="#f97316";
     ctx.fillText(`💥 Best: ${STATE.turnBestDamage}`, 360, 488);
 
-    // Tombol skip: sengaja berupa UI, bukan shortcut keyboard, agar tidak bentrok dengan typing.
-    ctx.fillStyle="#7c2d12";ctx.strokeStyle="#fb923c";ctx.lineWidth=2;
-    ctx.beginPath();ctx.roundRect(BTN_SKIP_WORD.x,BTN_SKIP_WORD.y,BTN_SKIP_WORD.w,BTN_SKIP_WORD.h,7);ctx.fill();ctx.stroke();
-    ctx.fillStyle="#fff7ed";ctx.font="bold 13px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
-    ctx.fillText("⏭ SKIP KATA", BTN_SKIP_WORD.x+BTN_SKIP_WORD.w/2, BTN_SKIP_WORD.y+BTN_SKIP_WORD.h/2);
-
+ 
     // Hint
     ctx.fillStyle="#475569";ctx.font="10px monospace";
     if(STATE.inputMode==="TAP"){
-      ctx.fillText("[Tap huruf] • [Tombol SKIP] • [Enter] Hentikan sesi • [F1] Ganti mode", 40, 610);
+      ctx.fillText("[Tap huruf] • [Tombol SKIP] • [Enter] Hentikan sesi • [F1] Ganti mode", 40, 628);
     } else {
-      ctx.fillText("[A-Z] Ketik • [Tombol SKIP] • [Enter] Hentikan sesi • [F1] Ganti mode", 40, 610);
+      ctx.fillText("[A-Z] Ketik • [Tombol SKIP] • [Enter] Hentikan sesi • [F1] Ganti mode", 40, 628);
     }
   }
 
@@ -2700,11 +2897,6 @@ function drawTypingPanel(){
     ctx.fillStyle="#64748b";ctx.font="10px monospace";
     const hist = STATE.turnWordsHistory.slice(-3).map(h=>`${h.word}(${h.dmg})`).join(" • ");
     ctx.fillText(`Terakhir: ${hist || "-"}`, 70, 535);
-    const pulse = Math.sin(performance.now()*0.005)*2;
-    ctx.fillStyle="#15803d";ctx.strokeStyle="#4ade80";ctx.lineWidth=3;
-    ctx.beginPath();ctx.roundRect(340, 560+pulse, 300, 50, 8);ctx.fill();ctx.stroke();
-    ctx.fillStyle="#ffffff";ctx.font="bold 18px monospace";ctx.textAlign="center";
-    ctx.fillText("▶ LANJUT  [ENTER]", 490, 585+pulse);
   }
 
   // Panel kanan
@@ -2739,6 +2931,65 @@ function drawTypingPanel(){
   ctx.fillText(`Combo max: ${STATE.maxCombo}  •  Perfect: ${STATE.wordsPerfect}`, 490, 580);
   ctx.fillText(`Best speed: ${STATE.stats.bestSpeed.toFixed(1)} huruf/detik`, 490, 598);
   ctx.fillText(`Kata terkuat: ${STATE.stats.bestWord} (${STATE.stats.bestWordDmg} dmg)`, 490, 616);
+
+  // ═══════════════════════════════════════════════════════════
+  // OVERLAY BUTTONS — digambar PALING AKHIR agar selalu di atas
+  // panel kiri/kanan, dan tidak pernah tertutup.
+  // ═══════════════════════════════════════════════════════════
+
+  // SKIP KATA (HERO_TYPING)
+  if(STATE.turnPhase==="HERO_TYPING"){
+    const bp = Math.sin(performance.now()*0.006)*1.5;
+    ctx.fillStyle="#7c2d12";ctx.strokeStyle="#fb923c";ctx.lineWidth=2;
+    ctx.beginPath();ctx.roundRect(BTN_SKIP_WORD.x,BTN_SKIP_WORD.y+bp,BTN_SKIP_WORD.w,BTN_SKIP_WORD.h,7);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#fff7ed";ctx.font="bold 13px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("⏭ SKIP KATA", BTN_SKIP_WORD.x+BTN_SKIP_WORD.w/2, BTN_SKIP_WORD.y+BTN_SKIP_WORD.h/2+bp);
+  }
+
+  // LANJUT (HERO_TURN_END)
+  // LANJUT (HERO_TURN_END)
+  if(STATE.turnPhase==="HERO_TURN_END"){
+    const pulse = Math.sin(performance.now()*0.005)*2;
+    ctx.fillStyle="#15803d";ctx.strokeStyle="#4ade80";ctx.lineWidth=3;
+    ctx.beginPath();ctx.roundRect(60, 555+pulse, 380, 50, 8);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#ffffff";ctx.font="bold 18px monospace";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("▶ LANJUT  [ENTER]", 250, 580+pulse);
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // RUSH BANNER — muncul di tengah canvas dengan fade-out
+  // ═══════════════════════════════════════════════════════════
+  if(STATE.rushActive){
+    const el = performance.now() - STATE.rushStartTime;
+    const t = Math.min(1, el/1400);
+    const alpha = 1 - t; // fade dari 1 ke 0 selama 1.4s
+    if(alpha > 0.01){
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      // Backdrop strip
+      const grad = ctx.createLinearGradient(0, 190, 0, 300);
+      grad.addColorStop(0, "rgba(0,0,0,0)");
+      grad.addColorStop(0.5, "rgba(0,0,0,0.75)");
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 190, canvas.width, 110);
+      // Teks RUSH besar
+      ctx.fillStyle = "#facc15";
+      ctx.font = "bold 46px 'Courier New', monospace";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.shadowColor = "#fbbf24"; ctx.shadowBlur = 28;
+      const wobble = Math.sin(el*0.02)*3;
+      ctx.fillText("⚡ PARTY RUSH ⚡", canvas.width/2, 245 + wobble);
+      // Subtitle
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#fde047";
+      ctx.font = "bold 14px monospace";
+      ctx.fillText("ALL-OUT ATTACK!", canvas.width/2, 278);
+      ctx.restore();
+    }
+  }
+
+
 }
 
 /* =========================================================
@@ -2900,7 +3151,9 @@ const BTN_TITLE_START={x:340,y:440,w:300,h:56};
 const BTN_BGM={x:865,y:12,w:98,h:26};
 const BTN_CRT={x:760,y:12,w:98,h:26};
 const BTN_MODE={x:655,y:12,w:98,h:26};
-const BTN_SKIP_WORD={x:760,y:575,w:180,h:38};
+const BTN_SKIP_WORD={x:150,y:588,w:180,h:32};
+const BTN_RUSH={x:520,y:12,w:130,h:26};
+const BTN_FULLSCREEN={x:400,y:12,w:110,h:26};
 
 /* =========================================================
    INPUT
@@ -2915,7 +3168,8 @@ function handlePointerDown(e){
   if(pos.x>=BTN_BGM.x&&pos.x<=BTN_BGM.x+BTN_BGM.w&&pos.y>=BTN_BGM.y&&pos.y<=BTN_BGM.y+BTN_BGM.h){AudioSys.toggleBgm();return;}
   if(pos.x>=BTN_CRT.x&&pos.x<=BTN_CRT.x+BTN_CRT.w&&pos.y>=BTN_CRT.y&&pos.y<=BTN_CRT.y+BTN_CRT.h){STATE.crtEnabled=!STATE.crtEnabled;AudioSys.playSelect(540);return;}
   if(pos.x>=BTN_MODE.x&&pos.x<=BTN_MODE.x+BTN_MODE.w&&pos.y>=BTN_MODE.y&&pos.y<=BTN_MODE.y+BTN_MODE.h){ toggleInputMode(); return; }
-  // TITLE — only the visible Start button is interactive.
+  if(pos.x>=BTN_RUSH.x&&pos.x<=BTN_RUSH.x+BTN_RUSH.w&&pos.y>=BTN_RUSH.y&&pos.y<=BTN_RUSH.y+BTN_RUSH.h){ triggerPartyRush(); return; }
+  if(pos.x>=BTN_FULLSCREEN.x&&pos.x<=BTN_FULLSCREEN.x+BTN_FULLSCREEN.w&&pos.y>=BTN_FULLSCREEN.y&&pos.y<=BTN_FULLSCREEN.y+BTN_FULLSCREEN.h){ toggleFullscreen(); return; }
   if(STATE.turnPhase==="TITLE"){
     if(pos.x>=BTN_TITLE_START.x&&pos.x<=BTN_TITLE_START.x+BTN_TITLE_START.w&&
        pos.y>=BTN_TITLE_START.y&&pos.y<=BTN_TITLE_START.y+BTN_TITLE_START.h){
@@ -2936,6 +3190,7 @@ function handlePointerDown(e){
       if(pos.x>=b.x&&pos.x<=b.x+b.w&&pos.y>=b.y&&pos.y<=b.y+b.h){STATE.selectedSkillIndex=i;AudioSys.playSelect(520);return;}
     }
     if(pos.x>=36&&pos.x<=444&&pos.y>=620&&pos.y<=648){ beginHeroTypingTurn(); return; }
+    if(pos.x>=36&&pos.x<=444&&pos.y>=530&&pos.y<=562){ triggerPartyRush(); return; }
     return;
   }
   // HERO_TYPING: shortcut keyboard dimatikan; skip tersedia sebagai tombol UI.
@@ -2950,7 +3205,7 @@ function handlePointerDown(e){
   }
   // HERO_TURN_END
   if(STATE.turnPhase==="HERO_TURN_END"){
-    if(pos.x>=340&&pos.x<=640&&pos.y>=555&&pos.y<=615){ advanceTurn(); return; }
+    if(pos.x>=60&&pos.x<=440&&pos.y>=550&&pos.y<=610){ advanceTurn(); return; }
     return;
   }
   // Lainnya
@@ -3009,7 +3264,7 @@ window.addEventListener("keydown",(e)=>{
   if(e.code==="F2"){e.preventDefault();AudioSys.toggleBgm();return;}
   if(e.code==="F3"){e.preventDefault();STATE.crtEnabled=!STATE.crtEnabled;AudioSys.playSelect(540);return;}
   if(e.code==="F1"){e.preventDefault();toggleInputMode();return;}
-
+  if(e.code==="F11"){e.preventDefault();toggleFullscreen();return;}
   // ══════════════════════════════════════════════════════════
   // TITLE
   // ══════════════════════════════════════════════════════════
